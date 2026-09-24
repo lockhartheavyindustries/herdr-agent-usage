@@ -186,6 +186,48 @@ fn direct_configuration_write_refuses_an_ambiguous_cache_directory() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("must run through Herdr"));
 }
 
+/// Claude's documented config directory relocates settings as well as
+/// credentials, so check/apply/uninstall must not silently fall back to HOME.
+#[test]
+fn claude_check_resolves_settings_under_claude_config_dir() {
+    let directory = tempdir().unwrap();
+    let profile = directory.path().join("claude-profile");
+    let home = directory.path().join("home");
+    let state = directory.path().join("state");
+    fs::create_dir_all(&profile).unwrap();
+    fs::create_dir_all(home.join(".claude")).unwrap();
+
+    let executable = std::path::Path::new(env!("CARGO_BIN_EXE_herdr-agent-usage"));
+    claude::apply_at(&profile.join("settings.json"), &state, executable).unwrap();
+    fs::write(
+        home.join(".claude/settings.json"),
+        r#"{"statusLine":{"type":"command","command":"echo wrong-home"}}"#,
+    )
+    .unwrap();
+
+    let output = Command::new(executable)
+        .args(["configure", "--check", "--agent", "claude"])
+        .env_remove("CLAUDE_SETTINGS_FILE")
+        .env("CLAUDE_CONFIG_DIR", &profile)
+        .env("HOME", &home)
+        .env("HERDR_PLUGIN_STATE_DIR", &state)
+        .env("HERDR_PLUGIN_CONFIG_DIR", directory.path())
+        .env("HERDR_CONFIG_FILE", directory.path().join("config.toml"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("Claude statusLine collector is installed"),
+        "{stdout}"
+    );
+    assert!(stdout.contains(profile.to_str().unwrap()), "{stdout}");
+}
+
 /// The plugin id rename left Claude's statusLine running the old binary into
 /// the old state directory. `check` must not call that hook installed: this
 /// install never receives an observation from it, so every new session's

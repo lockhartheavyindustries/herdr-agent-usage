@@ -1775,7 +1775,9 @@ fn tokens_for_loaded_snapshot(
 mod tests {
     use super::*;
     use crate::cli::{PercentStyle, SidebarLayout};
-    use crate::model::{ProviderSnapshot, ResetAt, UsageWindow, WindowKind};
+    use crate::model::{
+        ProviderSnapshot, ResetAt, SessionQuotaObservation, UsageWindow, WindowKind,
+    };
     use tempfile::tempdir;
 
     fn test_pane(id: &str, harness: Harness) -> AgentPane {
@@ -2125,6 +2127,21 @@ mod tests {
             vec![
                 window(WindowKind::FiveHour, 40.0, 9_000),
                 window(WindowKind::Weekly, 20.0, 90_000),
+            ],
+        );
+        snapshot.session_quota_observations.insert(
+            "s1".to_string(),
+            vec![
+                SessionQuotaObservation {
+                    kind: WindowKind::FiveHour,
+                    observed_at_unix: Some(1_000),
+                    api_generation: Some("generation-a".to_string()),
+                },
+                SessionQuotaObservation {
+                    kind: WindowKind::Weekly,
+                    observed_at_unix: Some(1_000),
+                    api_generation: Some("generation-a".to_string()),
+                },
             ],
         );
         cache.save(&snapshot).unwrap();

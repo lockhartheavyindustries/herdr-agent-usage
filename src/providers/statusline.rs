@@ -1,6 +1,7 @@
 use crate::model::{CacheTotals, CacheUsage, ContextUsage, ProviderSnapshot};
 use crate::providers::ProviderError;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -77,6 +78,57 @@ fn token_count(object: &serde_json::Map<String, Value>, snake: &str, camel: &str
         .or_else(|| object.get(camel))
         .and_then(Value::as_u64)
         .unwrap_or_default()
+}
+
+/// Digest statusLine fields whose values are derived from provider responses.
+///
+/// Claude Code can run the statusLine command again on `refreshInterval`
+/// without another API response. This fingerprint lets the cache distinguish
+/// that redraw from a newly completed response without treating prompt ids,
+/// transcript mtimes, or hook arrival time as freshness evidence.
+///
+/// The digest is intentionally *not* an account identity. Missing evidence is
+/// `None`, so callers fail closed and require an actual quota change before
+/// advancing freshness.
+pub fn api_generation(value: &Value) -> Option<String> {
+    let cost = value.get("cost").and_then(Value::as_object);
+    let context = value
+        .get("context_window")
+        .or_else(|| value.get("contextWindow"))
+        .and_then(Value::as_object);
+    let current = context
+        .and_then(|context| {
+            context
+                .get("current_usage")
+                .or_else(|| context.get("currentUsage"))
+        })
+        .and_then(Value::as_object);
+
+    // Keep the fingerprint canonical: hash a fixed-order tuple of documented
+    // scalar fields rather than serializing the current_usage object itself.
+    // Object key order is not part of Claude's statusLine contract.
+    let field = |object: Option<&serde_json::Map<String, Value>>, snake: &str, camel: &str| {
+        object
+            .and_then(|object| object.get(snake).or_else(|| object.get(camel)))
+            .cloned()
+    };
+    let evidence = serde_json::json!([
+        field(cost, "total_api_duration_ms", "totalApiDurationMs"),
+        field(context, "total_input_tokens", "totalInputTokens"),
+        field(context, "total_output_tokens", "totalOutputTokens"),
+        field(current, "input_tokens", "inputTokens"),
+        field(current, "output_tokens", "outputTokens"),
+        field(
+            current,
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens"
+        ),
+        field(current, "cache_read_input_tokens", "cacheReadInputTokens"),
+    ]);
+    let has_evidence = evidence
+        .as_array()
+        .is_some_and(|values| values.iter().any(|value| !value.is_null()));
+    has_evidence.then(|| format!("{:x}", Sha256::digest(evidence.to_string().as_bytes())))
 }
 
 /// Accumulate cache counters from the provider session transcript.
@@ -252,6 +304,45 @@ mod tests {
             );
         }
         assert_eq!(parse_model(&json!({"model": {"id": ""}})), None);
+    }
+
+    #[test]
+    fn api_generation_changes_only_with_api_derived_evidence() {
+        let base = json!({
+            "session_id": "session-1",
+            "prompt_id": "prompt-a",
+            "cost": {"total_api_duration_ms": 1200},
+            "context_window": {
+                "total_input_tokens": 100,
+                "total_output_tokens": 20,
+                "current_usage": {"input_tokens": 80}
+            }
+        });
+        let first = api_generation(&base).unwrap();
+
+        let mut prompt_only = base.clone();
+        prompt_only["prompt_id"] = json!("prompt-b");
+        assert_eq!(
+            api_generation(&prompt_only).as_deref(),
+            Some(first.as_str())
+        );
+
+        let mut unrelated_current_usage_field = base.clone();
+        unrelated_current_usage_field["context_window"]["current_usage"]["future_field"] =
+            json!("ignored");
+        assert_eq!(
+            api_generation(&unrelated_current_usage_field).as_deref(),
+            Some(first.as_str())
+        );
+
+        let mut next_response = base.clone();
+        next_response["cost"]["total_api_duration_ms"] = json!(1800);
+        assert_ne!(
+            api_generation(&next_response).as_deref(),
+            Some(first.as_str())
+        );
+
+        assert_eq!(api_generation(&json!({"prompt_id":"only-a-prompt"})), None);
     }
 
     #[test]

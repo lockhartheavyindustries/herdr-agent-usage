@@ -572,6 +572,22 @@ impl CacheUsage {
     }
 }
 
+/// Freshness evidence for one session-local quota window.
+///
+/// Claude statusLine may redraw without another provider response, so hook
+/// arrival time is not evidence that the percentage was observed again.
+/// `observed_at_unix = None` is deliberate for a legacy/replayed value whose
+/// age cannot be established yet. `api_generation` is an opaque digest of
+/// documented API-derived statusLine fields; it is not an account identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionQuotaObservation {
+    pub kind: WindowKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at_unix: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_generation: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSnapshot {
     /// StatusLine quota has no serving-account proof and is session-local.
@@ -611,6 +627,13 @@ pub struct ProviderSnapshot {
     /// only when exactly one conversation is observable.
     #[serde(default)]
     pub session_windows: BTreeMap<String, Vec<UsageWindow>>,
+    /// Per-window freshness evidence for Claude's session-local quota.
+    ///
+    /// Kept separate from `session_windows` so older cache files remain
+    /// readable and an omitted 7d window can keep its own age while 5h is
+    /// freshly observed (and vice versa).
+    #[serde(default)]
+    pub session_quota_observations: BTreeMap<String, Vec<SessionQuotaObservation>>,
     /// Legacy Claude profile digests retained for cache format compatibility.
     /// Current session-local observations clear this map during migration.
     #[serde(default)]
@@ -640,6 +663,7 @@ impl ProviderSnapshot {
             session_models: BTreeMap::new(),
             session_contexts: BTreeMap::new(),
             session_windows: BTreeMap::new(),
+            session_quota_observations: BTreeMap::new(),
             session_quota_scopes: BTreeMap::new(),
             quota_scope_windows: BTreeMap::new(),
             account_id: None,
@@ -754,6 +778,25 @@ impl ProviderSnapshot {
             }
             _ => None,
         }
+    }
+
+    /// Return freshness evidence for one Claude session-local quota window.
+    ///
+    /// Other providers and non-session-local snapshots deliberately have no
+    /// observation record here.
+    pub fn quota_observation_for_session(
+        &self,
+        session_id: Option<&str>,
+        kind: WindowKind,
+    ) -> Option<&SessionQuotaObservation> {
+        if self.provider != Provider::Claude || !self.session_quota_only {
+            return None;
+        }
+        let session_id = session_id.and_then(|id| self.session_for_lookup(id))?;
+        self.session_quota_observations
+            .get(session_id)?
+            .iter()
+            .find(|observation| observation.kind == kind)
     }
 
     /// Return the quota windows for a pane's session.

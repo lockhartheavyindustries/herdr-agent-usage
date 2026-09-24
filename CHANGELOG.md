@@ -20,6 +20,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Claude session-local quota no longer presents an idle pane's old percentage as
+  current. The statusLine cache tracks per-window freshness from documented
+  API-derived fields, timer-only redraws keep the original observation age,
+  and stale values render explicitly as `stale` without current headroom.
+  A temporary payload with no `rate_limits` may keep the same session's last
+  still-current window, but it keeps the old observation age rather than
+  making that percentage fresh again.
+- Claude configuration now honors `CLAUDE_CONFIG_DIR/settings.json` when
+  `CLAUDE_SETTINGS_FILE` is not set, matching Claude Code's documented
+  relocated config directory instead of silently falling back to
+  `~/.claude/settings.json`.
 - A Claude or Agy statusLine payload that reports only a model id, such as a
   model released after this build, now shows that id instead of a blank
   model. The display name is still preferred when the payload has one.

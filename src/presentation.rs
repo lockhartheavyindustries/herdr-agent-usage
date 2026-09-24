@@ -22,6 +22,10 @@ const METER_EMPTY: char = '\u{25b1}';
 /// Align `cx`, `5h`, `7d`, and `30d` without inventing period aliases.
 const GAUGE_LABEL_WIDTH: usize = 3;
 const GAUGE_CONTEXT_LABEL: &str = "cx";
+/// A Claude percentage older than this is no longer allowed to act like
+/// current headroom. This is a product safety policy, not statusLine's redraw
+/// interval: redraws can happen without another provider response.
+const CLAUDE_QUOTA_STALE_AFTER_SECONDS: u64 = 2 * 60;
 /// How many meter cells a window row can afford at `sidebar_width` columns,
 /// or `None` when the row should render through its existing non-gauge shape
 /// rather than lose the number the bar labels to truncation.
@@ -181,6 +185,7 @@ impl MetadataTokens {
         Self::from_snapshot_parts(
             snapshot,
             now_unix,
+            session_id,
             snapshot.model_for_session(session_id),
             snapshot.context_for_session(session_id),
             if session_id.is_none() {
@@ -235,6 +240,7 @@ impl MetadataTokens {
         Self::from_snapshot_parts(
             snapshot,
             now_unix,
+            session_id,
             quota_model,
             context,
             windows,
@@ -249,6 +255,7 @@ impl MetadataTokens {
     fn from_snapshot_parts(
         snapshot: &ProviderSnapshot,
         now_unix: u64,
+        session_id: Option<&str>,
         model: Option<&str>,
         context: Option<&crate::model::ContextUsage>,
         windows: &[UsageWindow],
@@ -268,6 +275,16 @@ impl MetadataTokens {
         let five_hour = window_in(windows, WindowKind::FiveHour);
         let weekly = window_in(windows, WindowKind::Weekly);
         let monthly = window_in(windows, WindowKind::Monthly);
+        let five_hour_stale = five_hour
+            .and_then(|_| stale_quota_age(snapshot, session_id, WindowKind::FiveHour, now_unix));
+        let weekly_stale = weekly
+            .and_then(|_| stale_quota_age(snapshot, session_id, WindowKind::Weekly, now_unix));
+        let monthly_stale = monthly
+            .and_then(|_| stale_quota_age(snapshot, session_id, WindowKind::Monthly, now_unix));
+        let has_stale_quota = (fields.contains(SidebarField::FiveHour)
+            && five_hour_stale.is_some())
+            || (fields.contains(SidebarField::Week) && weekly_stale.is_some())
+            || (fields.contains(SidebarField::Month) && monthly_stale.is_some());
         Self {
             quota_provider_model,
             quota_provider: if narrow_identity && !quota_model.is_empty() {
@@ -276,25 +293,66 @@ impl MetadataTokens {
                 quota_provider
             },
             quota_model,
-            quota_5h_severity: five_hour.map(|window| Severity::for_window(window, now_unix)),
+            quota_5h_severity: five_hour.map(|window| {
+                if five_hour_stale.is_some() {
+                    Severity::Unknown
+                } else {
+                    Severity::for_window(window, now_unix)
+                }
+            }),
             quota_5h: five_hour
-                .map(|window| compact_window_parts(window, now_unix, style, shape).rendered())
+                .map(|window| {
+                    five_hour_stale.map_or_else(
+                        || compact_window_parts(window, now_unix, style, shape).rendered(),
+                        |age| stale_window(window, age),
+                    )
+                })
                 .unwrap_or_default(),
             quota_week: weekly
-                .map(|window| compact_window_parts(window, now_unix, style, shape).rendered())
+                .map(|window| {
+                    weekly_stale.map_or_else(
+                        || compact_window_parts(window, now_unix, style, shape).rendered(),
+                        |age| stale_window(window, age),
+                    )
+                })
                 .unwrap_or_default(),
-            quota_week_severity: weekly.map(|window| Severity::for_window(window, now_unix)),
+            quota_week_severity: weekly.map(|window| {
+                if weekly_stale.is_some() {
+                    Severity::Unknown
+                } else {
+                    Severity::for_window(window, now_unix)
+                }
+            }),
             quota_month: monthly
-                .map(|window| compact_window_parts(window, now_unix, style, shape).rendered())
+                .map(|window| {
+                    monthly_stale.map_or_else(
+                        || compact_window_parts(window, now_unix, style, shape).rendered(),
+                        |age| stale_window(window, age),
+                    )
+                })
                 .unwrap_or_default(),
-            quota_month_severity: monthly.map(|window| Severity::for_window(window, now_unix)),
+            quota_month_severity: monthly.map(|window| {
+                if monthly_stale.is_some() {
+                    Severity::Unknown
+                } else {
+                    Severity::for_window(window, now_unix)
+                }
+            }),
             quota_context: sidebar_context(context, style, shape),
             quota_context_severity: context.map(|context| context_severity(context, style)),
             quota_cache: sidebar_cache(context),
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
             quota_cache_state: sidebar_cache_state(context, now_unix),
             quota_error: None,
-            quota_headroom: headroom(windows, fields),
+            // Once any displayed Claude window is stale, there is no current
+            // provider headroom to sort or use for alert recovery. Returning
+            // None also preserves an already-fired low-quota alert until a
+            // genuinely fresh observation can re-arm it.
+            quota_headroom: if has_stale_quota {
+                None
+            } else {
+                headroom(windows, fields)
+            },
         }
     }
 
@@ -331,6 +389,48 @@ impl MetadataTokens {
         _windows: &[UsageWindow],
     ) -> Self {
         Self::unavailable(provider, reason)
+    }
+}
+
+/// Return the age of a Claude session-local window once it is too old to
+/// claim current headroom. `Some(None)` means legacy/unknown age: the row is
+/// stale immediately because there is no proof of when the percentage was
+/// observed. Other providers keep their existing semantics.
+fn stale_quota_age(
+    snapshot: &ProviderSnapshot,
+    session_id: Option<&str>,
+    kind: WindowKind,
+    now_unix: u64,
+) -> Option<Option<u64>> {
+    if snapshot.provider != Provider::Claude || !snapshot.session_quota_only {
+        return None;
+    }
+    let session_id = session_id?;
+    let observation = snapshot.quota_observation_for_session(Some(session_id), kind);
+    match observation.and_then(|observation| observation.observed_at_unix) {
+        Some(observed_at) => {
+            let age = now_unix.saturating_sub(observed_at);
+            (age >= CLAUDE_QUOTA_STALE_AFTER_SECONDS).then_some(Some(age))
+        }
+        None => Some(None),
+    }
+}
+
+fn stale_window(window: &UsageWindow, age_seconds: Option<u64>) -> String {
+    let label = window.display_label();
+    match age_seconds {
+        Some(age_seconds) => format!("{label} stale {}", format_stale_age(age_seconds)),
+        None => format!("{label} stale"),
+    }
+}
+
+fn format_stale_age(seconds: u64) -> String {
+    if seconds < 60 * 60 {
+        format!("{}m", (seconds / 60).max(1))
+    } else if seconds < 24 * 60 * 60 {
+        format!("{}h", seconds / (60 * 60))
+    } else {
+        format!("{}d", seconds / (24 * 60 * 60))
     }
 }
 
@@ -745,6 +845,103 @@ mod tests {
     }
 
     #[test]
+    fn stale_claude_session_quota_is_visible_but_cannot_claim_headroom() {
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 100).session_local();
+        snapshot.session_windows.insert(
+            "session-a".to_string(),
+            vec![window(WindowKind::FiveHour, 92.0, 14_820)],
+        );
+        snapshot.session_quota_observations.insert(
+            "session-a".to_string(),
+            vec![SessionQuotaObservation {
+                kind: WindowKind::FiveHour,
+                observed_at_unix: Some(100),
+                api_generation: Some("generation-a".to_string()),
+            }],
+        );
+
+        let stale = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            400,
+            Some("session-a"),
+            PercentStyle::Remaining,
+            SidebarShape::default(),
+        );
+        assert_eq!(stale.quota_5h, "5h stale 5m");
+        assert_eq!(stale.quota_5h_severity, Some(Severity::Unknown));
+        assert_eq!(stale.quota_headroom, None);
+
+        let fresh = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            200,
+            Some("session-a"),
+            PercentStyle::Remaining,
+            SidebarShape::default(),
+        );
+        assert_eq!(fresh.quota_5h, "5h 8% 4h03m");
+        assert_eq!(fresh.quota_5h_severity, Some(Severity::Danger));
+        assert_eq!(fresh.quota_headroom, Some(8));
+    }
+
+    #[test]
+    fn a_hidden_stale_claude_window_does_not_suppress_visible_fresh_headroom() {
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 100).session_local();
+        snapshot.session_windows.insert(
+            "session-a".to_string(),
+            vec![
+                window(WindowKind::FiveHour, 20.0, 14_820),
+                window(WindowKind::Weekly, 95.0, 90_000),
+            ],
+        );
+        snapshot.session_quota_observations.insert(
+            "session-a".to_string(),
+            vec![
+                SessionQuotaObservation {
+                    kind: WindowKind::FiveHour,
+                    observed_at_unix: Some(250),
+                    api_generation: Some("generation-fresh".to_string()),
+                },
+                SessionQuotaObservation {
+                    kind: WindowKind::Weekly,
+                    observed_at_unix: Some(100),
+                    api_generation: Some("generation-old".to_string()),
+                },
+            ],
+        );
+
+        let values = MetadataTokens::from_snapshot_for_pane_with_fields(
+            &snapshot,
+            300,
+            Some("session-a"),
+            PercentStyle::Remaining,
+            SidebarShape::default(),
+            FieldSet::parse("5h").unwrap(),
+        );
+        assert_eq!(values.quota_5h, "5h 80% 4h02m");
+        assert_eq!(values.quota_headroom, Some(80));
+    }
+
+    #[test]
+    fn legacy_claude_session_quota_has_unknown_age_instead_of_looking_live() {
+        let mut snapshot = ProviderSnapshot::new(Provider::Claude, vec![], 100).session_local();
+        snapshot.session_windows.insert(
+            "session-a".to_string(),
+            vec![window(WindowKind::FiveHour, 5.0, 14_820)],
+        );
+
+        let values = MetadataTokens::from_snapshot_for_pane(
+            &snapshot,
+            400,
+            Some("session-a"),
+            PercentStyle::Remaining,
+            SidebarShape::default(),
+        );
+        assert_eq!(values.quota_5h, "5h stale");
+        assert_eq!(values.quota_5h_severity, Some(Severity::Unknown));
+        assert_eq!(values.quota_headroom, None);
+    }
+
+    #[test]
     fn headroom_rounds_down_so_a_window_never_crosses_a_threshold_early() {
         let snapshot = ProviderSnapshot::new(
             Provider::Claude,
@@ -809,7 +1006,7 @@ mod tests {
         assert!(!sidebar.quota_week.contains("30d"), "{sidebar:?}");
     }
     use super::*;
-    use crate::model::{ProviderSnapshot, UsageWindow};
+    use crate::model::{ProviderSnapshot, SessionQuotaObservation, UsageWindow};
 
     fn window(kind: WindowKind, used: f64, reset: u64) -> UsageWindow {
         UsageWindow::new(kind, used, Some(ResetAt::from_unix_seconds(reset))).unwrap()
