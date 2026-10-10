@@ -157,7 +157,7 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | Watch interval | 30 秒–1 小时，默认 60 秒 |
 | Fields | 默认开启提供方、主题、模型、上下文、短期／长期／月度额度；cache 与 TTL 可选 |
 | Agent order | 按 Space 分组，组内剩余额度最少优先（默认）；或使用 Herdr 自己的排序 |
-| Low quota alert | 关闭，或设置 1%–100% 的提醒阈值 |
+| Low quota alert | 关闭、设置 1%–100% 的单一阈值，或 `50/20/10/5` 这样的阶梯：额度每降到一级提醒一次，窗口重置后重新生效 |
 | Idle refresh | 关闭（默认）：Codex 与 Grok 仅在对应窗格工作时请求；开启：只要有计费到它们的窗格打开就持续请求，每个提供方每分钟最多一次 |
 | Agents | Claude、Codex、Grok、Agy、OpenCode、Pi、OMP、Devin、Muse、Cursor、Hermes |
 

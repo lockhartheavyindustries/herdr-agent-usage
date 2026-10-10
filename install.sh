@@ -43,7 +43,9 @@
 #
 # --low-quota-alert off (default) never notifies. A percentage notifies once,
 # per provider, when its remaining quota falls to that number or below, and
-# again only after it has recovered above it.
+# again only after it has recovered above it. Up to four percentages joined
+# by / (50/20/10/5) notify once per step on the way down and re-arm when the
+# window resets.
 #
 # --idle-refresh off (default) fetches Codex and Grok only while such a pane
 # is working. on keeps them fetched while a pane billed to them is open, at
@@ -132,7 +134,7 @@ while (($# > 0)); do
       ;;
 
     -h|--help)
-      sed -n '2,58p' "$0"
+      sed -n '2,60p' "$0"
       exit 0
       ;;
     *)
@@ -169,9 +171,16 @@ esac
 # `0` is accepted as a spelling of off, the same as configure reads it.
 case "$LOW_QUOTA_ALERT" in
   ""|off) ;;
-  *[!0-9]*) die "low-quota-alert must be off or a percentage from 0 to 100" ;;
-  *) ((LOW_QUOTA_ALERT <= 100)) \
-    || die "low-quota-alert must be off or a percentage from 0 to 100" ;;
+  *[!0-9/,]*) die "low-quota-alert must be off, a percentage from 0 to 100, or up to four joined by /" ;;
+  *)
+    IFS='/,' read -r -a alert_rungs <<< "$LOW_QUOTA_ALERT"
+    ((${#alert_rungs[@]} <= 4)) \
+      || die "low-quota-alert must be off, a percentage from 0 to 100, or up to four joined by /"
+    for rung in "${alert_rungs[@]}"; do
+      [[ "$rung" =~ ^[0-9]+$ ]] && ((rung <= 100)) \
+        || die "low-quota-alert must be off, a percentage from 0 to 100, or up to four joined by /"
+    done
+    ;;
 esac
 case "$IDLE_REFRESH" in
   ""|on|off) ;;

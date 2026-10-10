@@ -1632,9 +1632,10 @@ fn notify_low_quota(cache: &CacheStore, tokens: &[PaneTokens]) {
     let (warn, alerted) = low_quota_transitions(alert, &lowest, &previous);
     for provider in &warn {
         let headroom = lowest.get(provider).copied().unwrap_or_default();
+        let rung = alert.rung_for(headroom).unwrap_or_default();
         let _ = crate::herdr::notify(
             &format!("{provider} quota is low"),
-            &format!("{headroom}% left in the window closest to its limit."),
+            &format!("{headroom}% left in the window closest to its limit (below {rung}%)."),
         );
     }
     // Publishing happens on every event path. Rewriting an unchanged set every
@@ -1647,33 +1648,61 @@ fn notify_low_quota(cache: &CacheStore, tokens: &[PaneTokens]) {
 /// Which providers to warn about now, and the state to remember afterwards.
 ///
 /// Split out from the notification itself so the rule can be tested without a
-/// cache or a Herdr: a provider is warned about on the way down and not again
-/// until it has been seen above the threshold.
+/// cache or a Herdr: a provider is warned about on the way down, once per
+/// step of the ladder it reaches, and not again until it has been seen above
+/// that step. Climbing back above every step (the window reset) re-arms the
+/// whole ladder, which is what makes it once per window.
+///
+/// State entries are `Provider` for the top step, `Provider=<rung>` for a
+/// lower one. A bare name is what every earlier version wrote, and for a
+/// single-threshold alert the top step is the only step, so old state and
+/// old installs read exactly as before.
 fn low_quota_transitions(
     alert: LowQuotaAlert,
     lowest: &BTreeMap<String, u8>,
     previous: &[String],
 ) -> (Vec<String>, Vec<String>) {
+    let top = alert.top_rung();
+    let entry = |provider: &str, rung: u8| {
+        if Some(rung) == top {
+            provider.to_string()
+        } else {
+            format!("{provider}={rung}")
+        }
+    };
+    let previous_rung = |provider: &str| {
+        previous.iter().find_map(|state| {
+            let (name, rung) = match state.split_once('=') {
+                Some((name, rung)) => (name, rung.parse().ok()),
+                None => (state.as_str(), top),
+            };
+            (name == provider).then_some(rung).flatten()
+        })
+    };
     // A provider with no pane in this pass keeps the state it had. Otherwise
     // closing a pane would re-arm the warning and reopening it would repeat.
     let mut alerted: Vec<String> = previous
         .iter()
-        .filter(|provider| !lowest.contains_key(*provider))
+        .filter(|state| !lowest.contains_key(low_quota_state_name(state)))
         .cloned()
         .collect();
     let mut warn = Vec::new();
     for (provider, headroom) in lowest {
-        if !alert.triggers(*headroom) {
+        let Some(rung) = alert.rung_for(*headroom) else {
             continue;
-        }
-        alerted.push(provider.clone());
-        if !previous.contains(provider) {
+        };
+        alerted.push(entry(provider, rung));
+        if previous_rung(provider).is_none_or(|fired| rung < fired) {
             warn.push(provider.clone());
         }
     }
     alerted.sort();
     alerted.dedup();
     (warn, alerted)
+}
+
+fn low_quota_state_name(state: &str) -> &str {
+    state.split_once('=').map_or(state, |(name, _)| name)
 }
 
 fn event_json() -> Option<Value> {
@@ -2399,6 +2428,48 @@ mod tests {
         assert!(state.is_empty(), "{state:?}");
 
         let (warn, _) = low_quota_transitions(alert, &low(&[("Claude", 9)]), &state);
+        assert_eq!(warn, vec!["Claude".to_string()]);
+    }
+
+    /// Each step of a ladder warns once on the way down, a skipped step is
+    /// not warned about separately, and a reading back above a step re-arms
+    /// that step. Only the top step is stored bare, as the single-threshold
+    /// state always was, so an upgraded install reads its old state.
+    #[test]
+    fn a_ladder_warns_once_per_step_and_re_arms_per_window() {
+        let ladder = LowQuotaAlert::LADDER;
+        let (warn, state) = low_quota_transitions(ladder, &low(&[("Codex", 45)]), &[]);
+        assert_eq!(warn, vec!["Codex".to_string()]);
+        assert_eq!(state, vec!["Codex".to_string()]);
+
+        let (warn, state) = low_quota_transitions(ladder, &low(&[("Codex", 30)]), &state);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(state, vec!["Codex".to_string()]);
+
+        // 20 skipped straight to 8: one warning, at the 10 step.
+        let (warn, state) = low_quota_transitions(ladder, &low(&[("Codex", 8)]), &state);
+        assert_eq!(warn, vec!["Codex".to_string()]);
+        assert_eq!(state, vec!["Codex=10".to_string()]);
+
+        let (warn, state) = low_quota_transitions(ladder, &low(&[("Codex", 5)]), &state);
+        assert_eq!(warn, vec!["Codex".to_string()]);
+        assert_eq!(state, vec!["Codex=5".to_string()]);
+
+        // A window reset: above every step, the ladder is armed again.
+        let (warn, state) = low_quota_transitions(ladder, &low(&[("Codex", 95)]), &state);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert!(state.is_empty(), "{state:?}");
+        let (warn, _) = low_quota_transitions(ladder, &low(&[("Codex", 50)]), &state);
+        assert_eq!(warn, vec!["Codex".to_string()]);
+
+        // Old single-threshold state is the top step, so switching an
+        // install that already warned at 20 to the ladder stays quiet at 20
+        // and speaks again at 10.
+        let old = vec!["Claude".to_string()];
+        let (warn, state) = low_quota_transitions(ladder, &low(&[("Claude", 40)]), &old);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(state, old);
+        let (warn, _) = low_quota_transitions(ladder, &low(&[("Claude", 10)]), &state);
         assert_eq!(warn, vec!["Claude".to_string()]);
     }
 

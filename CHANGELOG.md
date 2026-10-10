@@ -20,6 +20,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   those two providers on the same identity-gated path a working pane uses,
   at most once per minute per provider. A pane opening starts the pulse;
   nothing is fetched without such a pane, and omp panes are never included.
+- Low quota alerts accept a ladder. `--low-quota-alert 50/20/10/5` (or the
+  `50/20/10/5%` choice in settings) notifies once per provider at each step
+  the remaining quota falls to, skipping straight to the lowest step passed,
+  and re-arms a step once the reading is back above it, so a window reset
+  arms the whole ladder again. A single threshold behaves exactly as before,
+  and the alert state an earlier version wrote still reads as its threshold.
 
 
 ### Changed

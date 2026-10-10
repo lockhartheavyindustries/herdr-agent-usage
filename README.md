@@ -168,7 +168,7 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | Watch interval | 30 seconds–1 hour; default 60 seconds |
 | Fields | Provider, topic, model, context, short/long/monthly quota on by default; cache and TTL optional |
 | Agent order | Group by Space, least quota left first (default); or Herdr's own policy |
-| Low quota alert | Off or a threshold from 1% to 100% |
+| Low quota alert | Off, one threshold from 1% to 100%, or a ladder such as `50/20/10/5` that notifies once per step as the quota falls and re-arms when the window resets |
 | Idle refresh | Off (default): Codex and Grok are fetched only while such a pane is working. On: fetched while a pane billed to them is open, at most once per minute per provider |
 | Agents | Claude, Codex, Grok, Agy, OpenCode, Pi, OMP, Devin, Muse, Cursor, Hermes |
 

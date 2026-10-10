@@ -737,43 +737,96 @@ impl IdleRefresh {
     }
 }
 
-/// The remaining-quota percentage at or below which a provider gets one
-/// desktop notification. `0` disables the alert entirely.
+/// The remaining-quota percentages at or below which a provider gets one
+/// desktop notification each: a single threshold (`10`), or a ladder
+/// (`50/20/10/5`) that warns once per step on the way down. Empty is off.
 ///
-/// A threshold rather than a boolean because the useful warning point differs
-/// per plan: 20% of a weekly window is hours of work, 5% is minutes.
+/// Thresholds rather than a boolean because the useful warning point differs
+/// per plan: 20% of a weekly window is hours of work, 5% is minutes. The
+/// rungs are kept descending with `0` as the unused filler, so the type stays
+/// `Copy` for the settings pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LowQuotaAlert(u8);
+pub struct LowQuotaAlert {
+    rungs: [u8; Self::MAX_RUNGS],
+}
 
 impl LowQuotaAlert {
     pub const ENV: &'static str = "HERDR_AGENT_QUOTA_LOW_ALERT";
-    pub const OFF: Self = Self(0);
+    pub const MAX_RUNGS: usize = 4;
+    pub const OFF: Self = Self { rungs: [0; 4] };
+    /// usagebar's ladder: four warnings, from "plan the day" to "minutes".
+    pub const LADDER: Self = Self {
+        rungs: [50, 20, 10, 5],
+    };
     /// The thresholds the settings pane cycles through, `OFF` first.
-    pub const CHOICES: [Self; 4] = [Self(0), Self(20), Self(10), Self(5)];
+    pub const CHOICES: [Self; 5] = [
+        Self::OFF,
+        Self::single(20),
+        Self::single(10),
+        Self::single(5),
+        Self::LADDER,
+    ];
 
-    pub fn as_u8(self) -> u8 {
-        self.0
+    const fn single(threshold: u8) -> Self {
+        Self {
+            rungs: [threshold, 0, 0, 0],
+        }
     }
 
     pub fn is_off(self) -> bool {
-        self.0 == 0
+        self.rungs[0] == 0
     }
 
-    /// Does `remaining` percent sit at or below the alert threshold?
+    /// The thresholds, highest first.
+    pub fn rungs(self) -> impl Iterator<Item = u8> {
+        self.rungs.into_iter().filter(|rung| *rung > 0)
+    }
+
+    /// The highest threshold, which a single-threshold alert is all of.
+    pub fn top_rung(self) -> Option<u8> {
+        self.rungs().next()
+    }
+
+    /// The step `remaining` percent has fallen to: the lowest threshold still
+    /// at or above it, or none while it sits above every threshold.
+    pub fn rung_for(self, remaining: u8) -> Option<u8> {
+        self.rungs().filter(|rung| remaining <= *rung).min()
+    }
+
+    /// Does `remaining` percent sit at or below any alert threshold?
     pub fn triggers(self, remaining: u8) -> bool {
-        !self.is_off() && remaining <= self.0
+        self.rung_for(remaining).is_some()
     }
 
+    /// `off`, one percentage, or up to four separated by `/` or `,`, in any
+    /// order; `%` suffixes are tolerated. `0` reads as off, as it always has.
     pub fn parse(name: &str) -> Option<Self> {
-        let trimmed = name.trim().trim_end_matches('%');
+        let trimmed = name.trim();
         if matches!(
             trimmed.to_ascii_lowercase().as_str(),
             "off" | "none" | "false"
         ) {
             return Some(Self::OFF);
         }
-        let value: u8 = trimmed.parse().ok()?;
-        (value <= 100).then_some(Self(value))
+        let mut rungs = Vec::new();
+        for part in trimmed.split(['/', ',']) {
+            let value: u8 = part.trim().trim_end_matches('%').trim().parse().ok()?;
+            if value > 100 {
+                return None;
+            }
+            if value > 0 && !rungs.contains(&value) {
+                rungs.push(value);
+            }
+        }
+        if rungs.len() > Self::MAX_RUNGS {
+            return None;
+        }
+        rungs.sort_unstable_by(|a, b| b.cmp(a));
+        let mut alert = Self::OFF;
+        for (slot, rung) in alert.rungs.iter_mut().zip(rungs) {
+            *slot = rung;
+        }
+        Some(alert)
     }
 
     pub fn from_arg_or_env(value: Option<Self>) -> Option<Self> {
@@ -798,13 +851,20 @@ impl std::fmt::Display for LowQuotaAlert {
         if self.is_off() {
             return write!(formatter, "off");
         }
-        write!(formatter, "{}%", self.0)
+        let rungs = self
+            .rungs()
+            .map(|rung| rung.to_string())
+            .collect::<Vec<_>>();
+        write!(formatter, "{}%", rungs.join("/"))
     }
 }
 
 fn parse_low_quota_alert(value: &str) -> Result<LowQuotaAlert, String> {
-    LowQuotaAlert::parse(value)
-        .ok_or_else(|| "low-quota-alert must be off or a percentage from 1 to 100".to_string())
+    LowQuotaAlert::parse(value).ok_or_else(|| {
+        "low-quota-alert must be off, a percentage from 1 to 100, or up to four of them \
+         separated by `/` (for example 50/20/10/5)"
+            .to_string()
+    })
 }
 
 impl SidebarLayout {
@@ -1072,10 +1132,39 @@ mod tests {
             assert_eq!(LowQuotaAlert::parse(&alert.to_string()), Some(alert));
         }
         assert_eq!(LowQuotaAlert::parse("off"), Some(LowQuotaAlert::OFF));
+        assert_eq!(LowQuotaAlert::parse("0"), Some(LowQuotaAlert::OFF));
         assert_eq!(LowQuotaAlert::parse("10%"), LowQuotaAlert::parse("10"));
         assert_eq!(LowQuotaAlert::parse("101"), None);
         assert_eq!(LowQuotaAlert::parse("later"), None);
         assert!(LowQuotaAlert::default().is_off());
+        // A ladder is any order, either separator, and prints descending.
+        assert_eq!(LowQuotaAlert::LADDER.to_string(), "50/20/10/5%");
+        assert_eq!(
+            LowQuotaAlert::parse("5, 10%, 20, 50"),
+            Some(LowQuotaAlert::LADDER)
+        );
+        assert_eq!(
+            LowQuotaAlert::parse("50/20/10/5"),
+            Some(LowQuotaAlert::LADDER)
+        );
+        assert_eq!(LowQuotaAlert::parse("20/20"), LowQuotaAlert::parse("20"));
+        assert_eq!(LowQuotaAlert::parse("50/40/30/20/10"), None);
+        assert_eq!(LowQuotaAlert::parse("50/x"), None);
+    }
+
+    /// The step a reading has fallen to is the lowest rung still above it,
+    /// so a drop straight from 60% to 8% warns at 10%, not at 50%.
+    #[test]
+    fn a_ladder_names_the_lowest_rung_the_reading_has_passed() {
+        let ladder = LowQuotaAlert::LADDER;
+        assert_eq!(ladder.rung_for(60), None);
+        assert_eq!(ladder.rung_for(50), Some(50));
+        assert_eq!(ladder.rung_for(21), Some(50));
+        assert_eq!(ladder.rung_for(8), Some(10));
+        assert_eq!(ladder.rung_for(0), Some(5));
+        assert_eq!(ladder.top_rung(), Some(50));
+        assert_eq!(LowQuotaAlert::parse("10").unwrap().top_rung(), Some(10));
+        assert_eq!(LowQuotaAlert::OFF.top_rung(), None);
     }
 
     /// Off is a threshold like any other in the type, and has to stay silent

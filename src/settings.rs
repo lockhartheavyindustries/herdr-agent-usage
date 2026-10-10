@@ -165,9 +165,10 @@ impl Settings {
                 AgentOrder::Default => "Herdr's own policy",
                 AgentOrder::Quota => "by Space, least quota left first",
             },
-            Choice::Alert => match self.alert.is_off() {
-                true => "no notification",
-                false => "notify once per provider on the way down",
+            Choice::Alert => match self.alert.rungs().count() {
+                0 => "no notification",
+                1 => "notify once per provider on the way down",
+                _ => "once per step on the way down",
             },
             Choice::IdleRefresh => match self.idle_refresh.is_on() {
                 true => "Codex/Grok ≤1 fetch/min while open",
