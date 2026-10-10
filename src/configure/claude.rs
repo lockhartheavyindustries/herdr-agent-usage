@@ -2,7 +2,7 @@ use super::statusline::Adapter;
 use crate::cache::{CacheStore, DEFAULT_WATCH_INTERVAL_SECONDS};
 use crate::model::Provider;
 use crate::presentation::pace_segment;
-use crate::providers::claude::parse_statusline;
+use crate::providers::claude::{apply_auto_compact_window, parse_statusline};
 use crate::providers::statusline::api_generation;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -24,6 +24,13 @@ fn claude_settings_path() -> Result<PathBuf> {
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;
     Ok(PathBuf::from(home).join(".claude/settings.json"))
+}
+
+/// Claude Code's own settings, read when an observation is taken and never
+/// written from here. Unreadable or malformed is simply "no settings".
+pub(crate) fn read_settings() -> Option<Value> {
+    let path = claude_settings_path().ok()?;
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
 pub fn check() -> Result<()> {
@@ -82,7 +89,10 @@ pub fn run_statusline_hook() -> Result<()> {
     let mut pace = None;
     if let Ok(value) = serde_json::from_slice::<Value>(&input) {
         let now_unix = CacheStore::now_unix();
-        if let Ok(snapshot) = parse_statusline(&value, now_unix) {
+        if let Ok(mut snapshot) = parse_statusline(&value, now_unix) {
+            if let Some(settings) = read_settings() {
+                apply_auto_compact_window(&mut snapshot.context, &value, &settings);
+            }
             pace = pace_segment(&snapshot.windows, now_unix);
             if let Ok(cache) = CacheStore::from_env() {
                 let generation = api_generation(&value);

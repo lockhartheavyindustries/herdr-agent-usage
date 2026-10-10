@@ -185,7 +185,7 @@ Installer options are also available through `./install.sh --help`.
 | Devin | CLI usage endpoint; 1d and 7d | Current CLI credentials |
 | Muse Code | CLI subscription endpoint; 5h and 7d | Current CLI account login; session via Muse's session lock (Linux) |
 | Cursor | CLI DashboardService usage; at, api, and 30d | Current CLI `auth.json`, else the macOS Keychain login from `cursor-agent login`, else `$CURSOR_STATE_DB` (`state.vscdb` access token) when the CLI has no login; model from local session files; topic from the generated session title; `cx` from `store.db` `token_details` (the CLI footer percent); cache from CLI hooks |
-| Claude Code | StatusLine; 5h and 7d | Exact session observation |
+| Claude Code | StatusLine; 5h and 7d. `cx` measures against `modelSettings.<model>.autoCompactWindow` from Claude Code's settings when that is set below the model's window, as its own status line does | Exact session observation |
 | Agy / Antigravity | StatusLine; 5h, 7d, and api (third-party pool on Gemini) | Exact session and identifiable model pool |
 | OpenCode | OpenCode Go usage endpoint | Go credential; confirmed PAYG routes have no subscription quota |
 | Pi | Canonical Codex quota | Only when the recorded account matches |

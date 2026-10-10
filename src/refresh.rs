@@ -1343,7 +1343,16 @@ fn load_statusline_snapshot(cache: &CacheStore, provider: Provider) -> Result<Fe
         // merged across a profile. No credential or session reset is needed.
         snapshot = match provider {
             Provider::Claude => {
-                crate::providers::claude::parse_statusline(&value, snapshot.fetched_at_unix)?
+                let mut snapshot =
+                    crate::providers::claude::parse_statusline(&value, snapshot.fetched_at_unix)?;
+                if let Some(settings) = crate::configure::claude::read_settings() {
+                    crate::providers::claude::apply_auto_compact_window(
+                        &mut snapshot.context,
+                        &value,
+                        &settings,
+                    );
+                }
+                snapshot
             }
             Provider::Agy => {
                 crate::providers::agy::parse_statusline(&value, snapshot.fetched_at_unix)?

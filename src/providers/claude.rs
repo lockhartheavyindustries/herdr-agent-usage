@@ -1,6 +1,6 @@
 use crate::cache::CacheStore;
 use crate::model::{ContextUsage, Provider, ProviderSnapshot, ResetAt, UsageWindow, WindowKind};
-use crate::providers::statusline::{parse_context, parse_model};
+use crate::providers::statusline::{parse_context, parse_model, token_count};
 use crate::providers::ProviderError;
 use serde_json::Value;
 
@@ -77,6 +77,77 @@ fn parse_window(
     UsageWindow::new(kind, used, reset)
         .map(Some)
         .map_err(|error| ProviderError::UnsupportedResponse(error.to_string()))
+}
+
+/// Measure the context row against Claude Code's compaction window.
+///
+/// `modelSettings.<model id>.autoCompactWindow` in Claude Code's own settings
+/// is where it compacts, and its status line measures context against that
+/// rather than the model's full window. When the setting exists for the
+/// pane's model (keyed without the `[1m]` suffix the payload carries) and is
+/// smaller than the window the payload reports, `cx` becomes the tokens in
+/// use against that window: exact counts from `current_usage` when present,
+/// else the payload's percentage rescaled. Anything missing, or a window
+/// that is not smaller, leaves the payload's own percentage untouched. The
+/// settings file is only ever read.
+pub fn apply_auto_compact_window(
+    context: &mut Option<ContextUsage>,
+    value: &Value,
+    settings: &Value,
+) {
+    let Some(context) = context.as_mut() else {
+        return;
+    };
+    let Some(window) = auto_compact_window(value, settings) else {
+        return;
+    };
+    let Some(context_window) = value
+        .get("context_window")
+        .or_else(|| value.get("contextWindow"))
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+    let Some(full) = context_window
+        .get("context_window_size")
+        .or_else(|| context_window.get("contextWindowSize"))
+        .and_then(Value::as_u64)
+        .filter(|size| *size > 0)
+    else {
+        return;
+    };
+    if window >= full {
+        return;
+    }
+    let used_tokens = context_window
+        .get("current_usage")
+        .or_else(|| context_window.get("currentUsage"))
+        .and_then(Value::as_object)
+        .map(|usage| {
+            (token_count(usage, "input_tokens", "inputTokens")
+                + token_count(usage, "cache_read_input_tokens", "cacheReadInputTokens")
+                + token_count(
+                    usage,
+                    "cache_creation_input_tokens",
+                    "cacheCreationInputTokens",
+                )) as f64
+        })
+        .unwrap_or_else(|| context.used_percent / 100.0 * full as f64);
+    context.used_percent = (used_tokens * 100.0 / window as f64).clamp(0.0, 100.0);
+}
+
+fn auto_compact_window(value: &Value, settings: &Value) -> Option<u64> {
+    let id = value.get("model")?.get("id")?.as_str()?;
+    let id = id.split('[').next()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    settings
+        .get("modelSettings")?
+        .get(id)?
+        .get("autoCompactWindow")?
+        .as_u64()
+        .filter(|window| *window > 0)
 }
 
 /// Claude Code v2.1.251+ reports the live prefix expiry on statusLine stdin.
@@ -194,6 +265,57 @@ mod tests {
         assert_eq!(cache.read_tokens, 800);
         assert_eq!(cache.creation_tokens, 100);
         assert_eq!(cache.hit_percent, 80.0);
+    }
+
+    /// With a compaction window below the model's window, `cx` is the tokens
+    /// in use against that window, as Claude Code's own status line shows
+    /// it. Without the setting, for another model, or with a window that is
+    /// not smaller, the payload's percentage stands.
+    #[test]
+    fn context_measures_against_a_smaller_auto_compact_window() {
+        let value = json!({
+            "model": {"id": "claude-opus-5-5[1m]", "display_name": "Opus 5.5"},
+            "context_window": {
+                "used_percentage": 20.0,
+                "context_window_size": 1_000_000,
+                "current_usage": {
+                    "input_tokens": 50_000,
+                    "cache_read_input_tokens": 140_000,
+                    "cache_creation_input_tokens": 10_000
+                }
+            }
+        });
+        let used = |settings: Value| {
+            let mut context = parse_statusline(&value, 1).unwrap().context;
+            apply_auto_compact_window(&mut context, &value, &settings);
+            context.unwrap().used_percent
+        };
+        let compact = json!({"modelSettings": {"claude-opus-5-5": {"autoCompactWindow": 500_000}}});
+        assert_eq!(used(compact), 40.0);
+        assert_eq!(used(json!({})), 20.0);
+        assert_eq!(
+            used(json!({"modelSettings": {"claude-sonnet-5-5": {"autoCompactWindow": 500_000}}})),
+            20.0
+        );
+        assert_eq!(
+            used(json!({"modelSettings": {"claude-opus-5-5": {"autoCompactWindow": 1_000_000}}})),
+            20.0
+        );
+        assert_eq!(
+            used(json!({"modelSettings": {"claude-opus-5-5": {"autoCompactWindow": "500000"}}})),
+            20.0
+        );
+
+        // No token counts: the payload's percentage is rescaled instead.
+        let without_counts = json!({
+            "model": {"id": "claude-opus-5-5"},
+            "context_window": {"used_percentage": 20.0, "context_window_size": 1_000_000}
+        });
+        let mut context = parse_statusline(&without_counts, 1).unwrap().context;
+        let settings =
+            json!({"modelSettings": {"claude-opus-5-5": {"autoCompactWindow": 500_000}}});
+        apply_auto_compact_window(&mut context, &without_counts, &settings);
+        assert_eq!(context.unwrap().used_percent, 40.0);
     }
 
     #[test]

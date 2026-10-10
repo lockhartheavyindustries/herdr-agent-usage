@@ -173,7 +173,7 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | Devin | CLI usage 接口；1d 和 7d | 当前 CLI 凭据 |
 | Muse Code | CLI 订阅接口；5h 和 7d | 当前 CLI 账号登录；会话通过 Muse 的 session lock 识别（Linux） |
 | Cursor | CLI DashboardService usage；at、api 和 30d | 当前 CLI `auth.json`，否则 macOS Keychain 里 `cursor-agent login` 的登录，否则在 CLI 没有自己的登录且设置了 `$CURSOR_STATE_DB` 时用桌面端 `state.vscdb` 的 access token；模型和主题来自本地会话文件；`cx` 来自 `store.db` `token_details`（CLI 底栏百分比）；cache 来自 CLI hook |
-| Claude Code | StatusLine；5h 和 7d | 精确会话的观测 |
+| Claude Code | StatusLine；5h 和 7d。当 Claude Code 设置里的 `modelSettings.<model>.autoCompactWindow` 小于模型窗口时，`cx` 以该压缩窗口为基准，与其自带状态栏一致 | 精确会话的观测 |
 | Agy / Antigravity | StatusLine；5h、7d，以及 Gemini 会话上的 api（第三方池） | 精确会话与可确认的模型额度池 |
 | OpenCode | OpenCode Go usage 接口 | Go 凭据；确认的 PAYG 路由不显示订阅额度 |
 | Pi | 规范 Codex collector 的额度 | 仅在记录的账号一致时复用 |

@@ -72,7 +72,11 @@ fn parse_cache_usage(value: Option<&Value>) -> Option<CacheUsage> {
     CacheUsage::from_token_counts(fresh, read, creation)
 }
 
-fn token_count(object: &serde_json::Map<String, Value>, snake: &str, camel: &str) -> u64 {
+pub(crate) fn token_count(
+    object: &serde_json::Map<String, Value>,
+    snake: &str,
+    camel: &str,
+) -> u64 {
     object
         .get(snake)
         .or_else(|| object.get(camel))

@@ -26,6 +26,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and re-arms a step once the reading is back above it, so a window reset
   arms the whole ladder again. A single threshold behaves exactly as before,
   and the alert state an earlier version wrote still reads as its threshold.
+- Claude `cx` measures against the compaction window. When Claude Code's
+  settings set `modelSettings.<model id>.autoCompactWindow` for the pane's
+  model (the `[1m]` suffix stripped) below the window the statusLine payload
+  reports, the context percent and its meter are the tokens in use against
+  that window, as Claude Code's own status line shows it. The setting is read
+  when the observation is taken and never written. Other agents are unchanged.
 
 
 ### Changed
