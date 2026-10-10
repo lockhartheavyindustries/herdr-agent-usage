@@ -1,7 +1,7 @@
 use crate::cache::CacheStore;
 use crate::identity::{self, PLUGIN_ID};
 use crate::model::{ContextUsage, Harness, Provider};
-use crate::presentation::{MetadataTokens, RowStyle, SidebarShape};
+use crate::presentation::{strip_reading_age, MetadataTokens, RowStyle, SidebarShape};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -2241,9 +2241,12 @@ pub(crate) fn quota_rows_have_drifted(
     if !current_has_window {
         return desired_has_window && plugin_quota_present(current);
     }
-    QUOTA_WINDOW_TOKEN_NAMES
-        .into_iter()
-        .any(|name| current_quota_window(current, name) != desired.get(name))
+    // The age suffix ticks on its own; only the quota decides membership of a
+    // pass, or an old idle reading would be fetched for showing its age.
+    QUOTA_WINDOW_TOKEN_NAMES.into_iter().any(|name| {
+        current_quota_window(current, name).map(|value| strip_reading_age(value))
+            != desired.get(name).map(|value| strip_reading_age(value))
+    })
 }
 
 fn metadata_matches(
@@ -4416,6 +4419,60 @@ mod tests {
             tokens.get("quota_provider_model").map(String::as_str),
             Some("Grok/grok-4.6")
         );
+    }
+
+    /// The age suffix ticks on its own. A pane whose 7d row has grown an
+    /// age, or whose age bucket moved on, is not drift: pulling it into a
+    /// watch pass would fetch an idle reading just for showing its age.
+    #[test]
+    fn a_reading_age_on_the_week_row_is_not_quota_drift() {
+        let snapshot = crate::model::ProviderSnapshot::new(
+            Provider::Codex,
+            vec![crate::model::UsageWindow::new(
+                crate::model::WindowKind::Weekly,
+                46.0,
+                Some(crate::model::ResetAt::from_unix_seconds(2_000_000)),
+            )
+            .unwrap()],
+            100_000,
+        );
+        let shape = SidebarShape::default();
+        // The reset ETA is 21d23h at every instant below, so the only thing
+        // that changes between these tokens is the age.
+        let fresh = MetadataTokens::from_snapshot(&snapshot, 100_000);
+        let current = desired_tokens(&fresh, "", shape);
+        let aged = MetadataTokens::from_snapshot(&snapshot, 100_000 + 30 * 60);
+        assert!(
+            aged.quota_week.ends_with(" · 30m old"),
+            "{}",
+            aged.quota_week
+        );
+        assert!(!quota_rows_have_drifted(&current, &aged, shape));
+        let older = MetadataTokens::from_snapshot(&snapshot, 100_000 + 40 * 60);
+        assert!(
+            older.quota_week.ends_with(" · 40m old"),
+            "{}",
+            older.quota_week
+        );
+        assert!(!quota_rows_have_drifted(
+            &desired_tokens(&aged, "", shape),
+            &older,
+            shape
+        ));
+        // The quota itself moving is still drift, age or no age.
+        let moved = crate::model::ProviderSnapshot::new(
+            Provider::Codex,
+            vec![crate::model::UsageWindow::new(
+                crate::model::WindowKind::Weekly,
+                50.0,
+                Some(crate::model::ResetAt::from_unix_seconds(2_000_000)),
+            )
+            .unwrap()],
+            100_000,
+        );
+
+        let moved = MetadataTokens::from_snapshot(&moved, 100_000 + 40 * 60);
+        assert!(quota_rows_have_drifted(&current, &moved, shape));
     }
 
     #[test]

@@ -16,7 +16,7 @@ fn agent_row_renders_compact_reset_eta_without_absolute_timestamp() {
     );
     assert_eq!(
         render_provider(Provider::Grok, Some(&snapshot), 0, PercentStyle::Remaining),
-        "Grok WARN\r\n  7d 21% left reset 2d3h"
+        "Grok WARN\r\n  7d 21% left reset 2d3h · <1m old"
     );
 }
 
@@ -36,6 +36,6 @@ fn the_used_style_reports_consumed_quota_without_changing_the_severity_band() {
     );
     assert_eq!(
         render_provider(Provider::Grok, Some(&snapshot), 0, PercentStyle::Used),
-        "Grok WARN\r\n  7d 79% used reset 2d3h"
+        "Grok WARN\r\n  7d 79% used reset 2d3h · <1m old"
     );
 }

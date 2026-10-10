@@ -1,7 +1,8 @@
 use crate::cache::CacheStore;
 use crate::cli::PercentStyle;
 use crate::model::{Provider, ProviderSnapshot};
-use crate::presentation::dashboard_summary;
+use crate::presentation::{dashboard_summary, reading_age};
+
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -94,12 +95,24 @@ pub fn render_provider(
     style: PercentStyle,
 ) -> String {
     match snapshot {
-        Some(snapshot) => format!(
-            "{} {}\r\n  {}",
-            provider.display_name(),
-            snapshot.severity(now_unix).label(),
-            dashboard_summary(snapshot, now_unix, style)
-        ),
+        Some(snapshot) => {
+            let summary = dashboard_summary(snapshot, now_unix, style);
+            let age = reading_age(now_unix.saturating_sub(snapshot.fetched_at_unix));
+            // A snapshot with no live window has no number for the age to
+            // date, so the age only trails a rendered summary.
+            let detail = if summary.is_empty() {
+                summary
+            } else {
+                format!("{summary} · {age}")
+            };
+            format!(
+                "{} {}\r\n  {}",
+                provider.display_name(),
+                snapshot.severity(now_unix).label(),
+                detail
+            )
+        }
+
         None => format!("{} N/A\r\n  unavailable", provider.display_name()),
     }
 }
@@ -138,8 +151,38 @@ mod tests {
         );
         assert_eq!(
             rendered,
-            "Claude WARN\r\n  5h 42% left reset 4h07m · 7d 73% left reset 2d3h"
+            "Claude WARN\r\n  5h 42% left reset 4h07m · 7d 73% left reset 2d3h · <1m old"
         );
+    }
+
+    /// The dashboard always dates its reading, exactly, because a row that
+    /// says `54%` without saying when is what made the stale rows look live.
+    #[test]
+    fn the_reading_age_trails_the_summary_at_any_age() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Codex,
+            vec![UsageWindow::new(
+                WindowKind::Weekly,
+                46.0,
+                Some(ResetAt::from_unix_seconds(400_000)),
+            )
+            .unwrap()],
+            100_000,
+        );
+        let rendered = render_provider(
+            Provider::Codex,
+            Some(&snapshot),
+            100_000 + 40 * 60,
+            PercentStyle::default(),
+        );
+        assert_eq!(rendered, "Codex OK\r\n  7d 54% left reset 3d10h · 40m old");
+        let rendered = render_provider(
+            Provider::Codex,
+            Some(&snapshot),
+            100_000 + 26 * 60 * 60,
+            PercentStyle::default(),
+        );
+        assert!(rendered.ends_with(" · 1d2h old"), "{rendered}");
     }
 
     #[test]

@@ -208,7 +208,10 @@ session metadata instead; Muse uses the last prompt in its transcript.
 All supported working agents participate in one background watcher. Requests
 are debounced for 60 seconds, including a final refresh after a turn settles.
 OMP additionally retains its own five-minute usage cache. Idle panes sharing a
-verified quota source receive the same reading.
+verified quota source receive the same reading. The dashboard dates every
+reading; a sidebar 7d row adds `· 40m old` once its reading is 30 minutes old
+(rounded down to ten minutes, then hours, then days) without fetching anything.
+
 
 Native Codex, Grok, Devin, Muse, and Cursor collectors follow the plugin's current login,
 not separate accounts for each pane. Claude/Agy do not report a reliable serving

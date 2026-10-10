@@ -6,7 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Every reading is dated. The dashboard shows the exact age of each provider's
+  reading (`7d 54% left reset 3d13h · 40m old`); a sidebar 7d row adds the
+  age once the reading is 30 minutes old, rounded down to ten minutes, then
+  to the hour and the day (`7d 54% 3d13h · 40m old`). The age never triggers a
+  fetch or a watch pass on its own. Claude rows that already read `stale`
+  keep that label instead.
+
 ### Changed
+
 
 - The GitHub repository and Herdr plugin id are now
   [`levi-qiao/herdr-agent-usage`](https://github.com/levi-qiao/herdr-agent-usage)

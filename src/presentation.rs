@@ -285,6 +285,49 @@ impl MetadataTokens {
             && five_hour_stale.is_some())
             || (fields.contains(SidebarField::Week) && weekly_stale.is_some())
             || (fields.contains(SidebarField::Month) && monthly_stale.is_some());
+        // Claude's stale rows already carry their own age, so the suffix is
+        // for the providers whose reading only moves when something fetches.
+        let age = if has_stale_quota {
+            String::new()
+        } else {
+            sidebar_age(now_unix.saturating_sub(snapshot.fetched_at_unix))
+        };
+        let mut age = Some(age).filter(|age| !age.is_empty());
+        // The age trails one row: 7d where there is one, otherwise 30d or 5h.
+        let mut with_age = |window: Option<&UsageWindow>, rendered: String| match window {
+            Some(_) => match age.take() {
+                Some(age) => format!("{rendered}{AGE_SEPARATOR}{age}"),
+                None => rendered,
+            },
+            None => rendered,
+        };
+        let quota_week = weekly
+            .map(|window| {
+                weekly_stale.map_or_else(
+                    || compact_window_parts(window, now_unix, style, shape).rendered(),
+                    |age| stale_window(window, age),
+                )
+            })
+            .unwrap_or_default();
+        let quota_week = with_age(weekly, quota_week);
+        let quota_month = monthly
+            .map(|window| {
+                monthly_stale.map_or_else(
+                    || compact_window_parts(window, now_unix, style, shape).rendered(),
+                    |age| stale_window(window, age),
+                )
+            })
+            .unwrap_or_default();
+        let quota_month = with_age(monthly, quota_month);
+        let quota_5h = five_hour
+            .map(|window| {
+                five_hour_stale.map_or_else(
+                    || compact_window_parts(window, now_unix, style, shape).rendered(),
+                    |age| stale_window(window, age),
+                )
+            })
+            .unwrap_or_default();
+        let quota_5h = with_age(five_hour, quota_5h);
         Self {
             quota_provider_model,
             quota_provider: if narrow_identity && !quota_model.is_empty() {
@@ -300,22 +343,8 @@ impl MetadataTokens {
                     Severity::for_window(window, now_unix)
                 }
             }),
-            quota_5h: five_hour
-                .map(|window| {
-                    five_hour_stale.map_or_else(
-                        || compact_window_parts(window, now_unix, style, shape).rendered(),
-                        |age| stale_window(window, age),
-                    )
-                })
-                .unwrap_or_default(),
-            quota_week: weekly
-                .map(|window| {
-                    weekly_stale.map_or_else(
-                        || compact_window_parts(window, now_unix, style, shape).rendered(),
-                        |age| stale_window(window, age),
-                    )
-                })
-                .unwrap_or_default(),
+            quota_5h,
+            quota_week,
             quota_week_severity: weekly.map(|window| {
                 if weekly_stale.is_some() {
                     Severity::Unknown
@@ -323,14 +352,7 @@ impl MetadataTokens {
                     Severity::for_window(window, now_unix)
                 }
             }),
-            quota_month: monthly
-                .map(|window| {
-                    monthly_stale.map_or_else(
-                        || compact_window_parts(window, now_unix, style, shape).rendered(),
-                        |age| stale_window(window, age),
-                    )
-                })
-                .unwrap_or_default(),
+            quota_month,
             quota_month_severity: monthly.map(|window| {
                 if monthly_stale.is_some() {
                     Severity::Unknown
@@ -344,6 +366,7 @@ impl MetadataTokens {
             quota_cache_ttl: sidebar_cache_ttl(context, now_unix),
             quota_cache_state: sidebar_cache_state(context, now_unix),
             quota_error: None,
+
             // Once any displayed Claude window is stale, there is no current
             // provider headroom to sort or use for alert recovery. Returning
             // None also preserves an already-fired low-quota alert until a
@@ -377,6 +400,7 @@ impl MetadataTokens {
             quota_cache_ttl: String::new(),
             quota_cache_state: String::new(),
             quota_error: Some(reason.into().chars().take(80).collect()),
+
             quota_headroom: None,
         }
     }
@@ -432,6 +456,43 @@ fn format_stale_age(seconds: u64) -> String {
     } else {
         format!("{}d", seconds / (24 * 60 * 60))
     }
+}
+
+/// A sidebar row starts saying how old its reading is from here on. Below
+/// this the number is recent enough to read as live.
+pub const READING_AGE_SIDEBAR_AFTER_SECONDS: u64 = 30 * 60;
+/// Joins a window token and its age (`7d 54% 3d13h · 40m old`). No window
+/// token contains it otherwise, which is what lets [`strip_reading_age`]
+/// find the boundary.
+const AGE_SEPARATOR: &str = " · ";
+
+/// The window token without its trailing age, so a comparison that decides
+/// whether the *quota* moved does not see the clock moving.
+pub(crate) fn strip_reading_age(token: &str) -> &str {
+    token.split(AGE_SEPARATOR).next().unwrap_or(token)
+}
+
+/// The age of a reading for the dashboard, which repaints every second and
+/// can afford the exact value: `<1m old`, `40m old`, `1h05m old`, `2d3h old`.
+pub fn reading_age(seconds: u64) -> String {
+    if seconds < 60 {
+        return "<1m old".to_string();
+    }
+    format!("{} old", format_duration(seconds))
+}
+
+/// The age of a reading for a sidebar row, or nothing while it is recent.
+///
+/// Every publish compares this token against what the pane shows, so it must
+/// not move every minute: under an hour it is rounded down to ten minutes
+/// (`30m old`, `40m old`), then to the hour and to the day. A pane is
+/// rewritten for the age at most once per bucket, and only on a pass that
+/// was publishing to it anyway.
+fn sidebar_age(seconds: u64) -> String {
+    if seconds < READING_AGE_SIDEBAR_AFTER_SECONDS {
+        return String::new();
+    }
+    format!("{} old", format_stale_age(seconds - seconds % (10 * 60)))
 }
 
 /// The least remaining quota across the windows the sidebar shows.
@@ -1116,6 +1177,63 @@ mod tests {
             dashboard_summary(&snapshot, 0, PercentStyle::default()),
             "5h 42% left reset 4h07m · 7d 73% left reset 2d3h"
         );
+    }
+
+    /// A sidebar row dates its reading only once it is half an hour old,
+    /// on the 7d token, rounded down to ten minutes so a republish does not
+    /// rewrite the pane every minute.
+    #[test]
+    fn a_sidebar_row_dates_its_reading_once_it_is_half_an_hour_old() {
+        let snapshot = ProviderSnapshot::new(
+            Provider::Codex,
+            vec![window(WindowKind::Weekly, 46.0, 400_000)],
+            100_000,
+        );
+        let fresh = MetadataTokens::from_snapshot(&snapshot, 100_000 + 29 * 60);
+        assert_eq!(fresh.quota_week, "7d 54% 3d10h");
+        let aged = MetadataTokens::from_snapshot(&snapshot, 100_000 + 47 * 60);
+        assert_eq!(aged.quota_week, "7d 54% 3d10h · 40m old");
+        assert_eq!(strip_reading_age(&aged.quota_week), "7d 54% 3d10h");
+        assert_eq!(aged.quota_5h, "");
+        assert_eq!(aged.quota_headroom, Some(54));
+
+        assert_eq!(sidebar_age(30 * 60), "30m old");
+        assert_eq!(sidebar_age(59 * 60), "50m old");
+        assert_eq!(sidebar_age(3 * 60 * 60 + 20 * 60), "3h old");
+        assert_eq!(sidebar_age(2 * 24 * 60 * 60), "2d old");
+        assert_eq!(reading_age(30), "<1m old");
+        assert_eq!(reading_age(40 * 60), "40m old");
+    }
+
+    /// Without a 7d window the age trails whichever window the row has, and
+    /// a Claude row that already says `stale` does not date itself twice.
+    #[test]
+    fn the_reading_age_trails_another_window_and_skips_stale_claude_rows() {
+        let five_hour_only = ProviderSnapshot::new(
+            Provider::OpenCodeGo,
+            vec![
+                window(WindowKind::FiveHour, 10.0, 400_000),
+                window(WindowKind::Monthly, 30.0, 500_000),
+            ],
+            100_000,
+        );
+        let tokens = MetadataTokens::from_snapshot(&five_hour_only, 100_000 + 60 * 60);
+        assert_eq!(tokens.quota_5h, "5h 90% 3d10h");
+        assert_eq!(tokens.quota_month, "30d 70% 4d14h · 1h old");
+
+        let mut claude = ProviderSnapshot::new(Provider::Claude, vec![], 100_000).session_local();
+        claude.session_windows.insert(
+            "s1".to_string(),
+            vec![window(WindowKind::Weekly, 46.0, 400_000)],
+        );
+        let tokens = MetadataTokens::from_snapshot_for_pane(
+            &claude,
+            100_000 + 60 * 60,
+            Some("s1"),
+            PercentStyle::default(),
+            SidebarShape::default(),
+        );
+        assert_eq!(tokens.quota_week, "7d stale");
     }
 
     #[test]
