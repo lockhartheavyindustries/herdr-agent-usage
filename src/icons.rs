@@ -27,6 +27,7 @@ pub fn for_harness(harness: Harness) -> &'static str {
         Harness::OpenCode => "\u{e1a2}",
         Harness::Omp => "\u{e1a3}",
         Harness::Pi => "\u{e1a9}",
+        Harness::Hermes => "\u{e1aa}",
         Harness::Cursor => "\u{e1ab}",
         Harness::Grok => "\u{e1b1}",
         Harness::Agy => "\u{e1b2}",

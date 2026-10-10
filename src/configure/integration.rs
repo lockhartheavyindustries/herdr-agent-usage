@@ -31,6 +31,7 @@ fn integration_id(harness: Harness) -> Option<&'static str> {
         Harness::Omp => Some("omp"),
         Harness::Devin => Some("devin"),
         Harness::Cursor => Some("cursor"),
+        Harness::Hermes => Some("hermes"),
         Harness::Agy | Harness::Muse => None,
     }
 }
@@ -150,6 +151,7 @@ grok: outdated (v0) (/home/u/.grok/hooks/herdr-agent-state.sh)
         assert_eq!(integration_id(Harness::Agy), None);
         assert_eq!(integration_id(Harness::Muse), None);
         assert_eq!(integration_id(Harness::Cursor), Some("cursor"));
+        assert_eq!(integration_id(Harness::Hermes), Some("hermes"));
         assert_eq!(integration_id(Harness::OpenCode), Some("opencode"));
         assert_eq!(integration_id(Harness::Pi), Some("pi"));
         assert_eq!(integration_id(Harness::Omp), Some("omp"));

@@ -4,6 +4,7 @@ pub mod codex;
 pub mod cursor;
 pub mod devin;
 pub mod grok;
+pub mod hermes;
 pub mod muse;
 pub mod omp;
 pub mod opencode_go;

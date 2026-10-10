@@ -106,6 +106,7 @@ pub enum Harness {
     Devin,
     Muse,
     Cursor,
+    Hermes,
 }
 
 impl Harness {
@@ -123,6 +124,7 @@ impl Harness {
             "devin" | "devin-cli" => Some(Self::Devin),
             "muse" | "muse-code" => Some(Self::Muse),
             "cursor" | "cursor-agent" | "cursor-cli" => Some(Self::Cursor),
+            "hermes" | "hermes-agent" => Some(Self::Hermes),
             _ => None,
         }
     }
@@ -138,7 +140,7 @@ impl Harness {
             Self::Devin => Some(Provider::Devin),
             Self::Muse => Some(Provider::Muse),
             Self::Cursor => Some(Provider::Cursor),
-            Self::OpenCode | Self::Pi | Self::Omp => None,
+            Self::OpenCode | Self::Pi | Self::Omp | Self::Hermes => None,
         }
     }
 
@@ -1420,6 +1422,12 @@ mod tests {
         assert_eq!(Harness::billing_for_agent("opencode"), None);
         assert_eq!(Harness::billing_for_agent("pi"), None);
         assert_eq!(Harness::billing_for_agent("cursor"), Some(Provider::Cursor));
+        assert_eq!(Harness::from_agent_name("hermes"), Some(Harness::Hermes));
+        assert_eq!(
+            Harness::from_agent_name("hermes-agent"),
+            Some(Harness::Hermes)
+        );
+        assert_eq!(Harness::billing_for_agent("hermes"), None);
         assert_eq!(
             Harness::billing_for_agent("cursor-agent"),
             Some(Provider::Cursor)

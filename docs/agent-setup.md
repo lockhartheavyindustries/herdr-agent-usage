@@ -75,9 +75,10 @@ tokens, not every alias you saw.
 | `devin` | `devin` | `~/.local/share/devin` |
 | `muse` | `muse`, `muse-code` | `~/.config/muse` |
 | `cursor` | `cursor`, `cursor-agent` | `~/.cursor` |
+| `hermes` | `hermes` | `~/.hermes` (or `$HERMES_HOME`) |
 
 Supported set (append-only; do not reorder):
-`claude,codex,grok,agy,opencode,pi,omp,devin,muse,cursor`.
+`claude,codex,grok,agy,opencode,pi,omp,devin,muse,cursor,hermes`.
 
 If nothing matches, install **all** and say so. Prefer the detected subset:
 `configure` writes Claude/Agy `statusLine` entries and Cursor hooks only for
@@ -139,7 +140,7 @@ herdr integration status
 For each **detected** agent whose line is `not installed`, run
 `herdr integration install <id>`:
 
-`claude`, `codex`, `grok`, `opencode`, `pi`, `omp`, `devin`, `cursor`.
+`claude`, `codex`, `grok`, `opencode`, `pi`, `omp`, `devin`, `cursor`, `hermes`.
 
 Skip ids the user does not have. `configure` already tries omp when omp is
 selected; a machine without omp must skip it, not fail the rest.

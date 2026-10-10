@@ -24,6 +24,9 @@ pub struct ResolvedPane {
     /// subscription is paying; this says which of omp's accounts, and where to
     /// ask omp about it.
     pub omp: Option<crate::omp::OmpEvidence>,
+    /// A generated session title the harness records itself, so the event
+    /// path need not read the pane for a topic. Hermes only, today.
+    pub session_summary: Option<String>,
 }
 
 pub fn resolve_with_identity(pane: &AgentPane) -> ResolvedPane {
@@ -58,12 +61,48 @@ pub fn resolve_with_identity(pane: &AgentPane) -> ResolvedPane {
                 pane.session.as_ref().and_then(|session| session.path()),
             )
         }
+        Harness::Hermes => {
+            return resolve_hermes_with_identity(
+                pane.session.as_ref().and_then(|session| session.id()),
+            )
+        }
     };
     ResolvedPane {
         resolution,
         identity: None,
         context: None,
         omp: None,
+        session_summary: None,
+    }
+}
+
+/// Hermes records no subscription quota, so the pane never resolves to a
+/// billing target. The session may still be served by a login this plugin
+/// collects elsewhere (`openai-codex`, `xai-oauth`), but nothing proves it
+/// is the same account, so the route stays indeterminate rather than
+/// borrowing that collector's windows. Hermes's own `state.db` gives the
+/// model, the backend label, the title, context, and cache for the exact
+/// session Herdr reported.
+fn resolve_hermes_with_identity(session_id: Option<&str>) -> ResolvedPane {
+    let Some(evidence) = session_id.and_then(crate::providers::hermes::session_evidence) else {
+        return indeterminate_pane();
+    };
+    let provider = match evidence.billing_provider.as_deref() {
+        Some(value) => vendor_label(value),
+        None => Some("Hermes".to_string()),
+    };
+    let model = match evidence.model.as_deref() {
+        Some(value) => safe_identity_part(value),
+        None => Some(String::new()),
+    };
+    ResolvedPane {
+        resolution: Resolution::Indeterminate,
+        identity: provider
+            .zip(model)
+            .map(|(provider, model)| PaneIdentity { provider, model }),
+        context: evidence.context,
+        omp: None,
+        session_summary: evidence.title,
     }
 }
 
@@ -75,6 +114,7 @@ fn resolve_omp_with_identity(session_path: Option<&str>) -> ResolvedPane {
         identity: route.session.as_ref().and_then(pi_identity),
         context: route.context,
         omp: route.evidence,
+        session_summary: None,
     }
 }
 
@@ -93,6 +133,7 @@ fn resolve_pi_with_identity(
         identity: route.session.as_ref().and_then(pi_identity),
         context: route.context,
         omp: None,
+        session_summary: None,
     }
 }
 
@@ -104,18 +145,24 @@ fn resolve_pi_with_identity(
 /// width for are used where they mean the same subscription; anything else is
 /// shown as the harness spells it.
 fn pi_identity(session: &crate::pi::SessionEvidence) -> Option<PaneIdentity> {
-    let provider = match session.provider_id.as_str() {
-        "openai-codex" => "Codex".to_string(),
-        "xai" | "xai-oauth" => "Grok".to_string(),
-        "anthropic" => "Claude".to_string(),
-        "google-antigravity" => "Agy".to_string(),
-        value => safe_identity_part(value)?,
-    };
+    let provider = vendor_label(&session.provider_id)?;
     let model = match session.model_id.as_deref() {
         Some(value) => safe_identity_part(value)?,
         None => String::new(),
     };
     Some(PaneIdentity { provider, model })
+}
+
+/// Sidebar name for a backend provider id, shared by the harnesses that
+/// route one session to a vendor this sidebar already styles.
+fn vendor_label(provider_id: &str) -> Option<String> {
+    match provider_id {
+        "openai-codex" => Some("Codex".to_string()),
+        "xai" | "xai-oauth" => Some("Grok".to_string()),
+        "anthropic" => Some("Claude".to_string()),
+        "google-antigravity" => Some("Agy".to_string()),
+        value => safe_identity_part(value),
+    }
 }
 
 fn safe_identity_part(value: &str) -> Option<String> {
@@ -151,6 +198,7 @@ fn resolve_opencode_with_identity(
         identity,
         context,
         omp: None,
+        session_summary: None,
     }
 }
 
@@ -160,6 +208,7 @@ fn indeterminate_pane() -> ResolvedPane {
         identity: None,
         context: None,
         omp: None,
+        session_summary: None,
     }
 }
 

@@ -90,6 +90,7 @@ mod tests {
             Harness::Devin,
             Harness::Muse,
             Harness::Cursor,
+            Harness::Hermes,
         ] {
             let mut pane = pane(harness, "w1:p7", Some("provider-session"));
             bind_agy_quota_session(&mut pane);

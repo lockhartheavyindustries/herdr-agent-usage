@@ -54,7 +54,7 @@ Concretely, this means:
 |---|---|---|
 | `startup` | Herdr's `[[startup]]` hook | No |
 | `refresh` | manual action, `startup` | No |
-| `event` | `pane.agent_detected`, `pane.agent_status_changed` | Only the pane named in `HERDR_PLUGIN_EVENT_JSON`, and never a Pi, omp, Muse, or Cursor pane — their transcripts carry the evidence |
+| `event` | `pane.agent_detected`, `pane.agent_status_changed` | Only the pane named in `HERDR_PLUGIN_EVENT_JSON`, and never a Pi, omp, Muse, Cursor, or Hermes pane — their transcripts carry the evidence |
 | `focus` | `pane.focused`, `workspace.focused`, `tab.focused` | No |
 | `watch` | detached from a working status event | No (agent metadata only) |
 
@@ -376,7 +376,7 @@ Wiring the new name is not enough. Also:
    `ProviderSelection`, the fetch path, and a cache identity. If Herdr has
    no integration for it, `integration_id` returns `None` (Agy, Muse).
 5. If its own transcript is the evidence, `event` must not read the pane
-   (Pi, omp, Muse, Cursor).
+   (Pi, omp, Muse, Cursor, Hermes).
 6. Tests that name agents must walk `SUPPORTED`, not a copied list. A copied
    list is how Muse missed the watcher-alive check and the "installs
    everything" sidebar assertions.

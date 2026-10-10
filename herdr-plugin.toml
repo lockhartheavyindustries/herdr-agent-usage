@@ -2,7 +2,7 @@ id = "herdr-agent-usage"
 name = "Herdr Agent Usage"
 version = "1.6.2"
 min_herdr_version = "0.9.0"
-description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, Pi, omp, Devin, Muse, and Cursor."
+description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, Pi, omp, Devin, Muse, Cursor, and Hermes."
 platforms = ["macos", "linux"]
 
 [[build]]
@@ -68,8 +68,8 @@ title = "Agent quota settings"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" settings"]
 placement = "popup"
 # Every option on screen at once. The default half-size popup is 24 rows and
-# the list plus controls needs 33 interior rows, so without this the agents
+# the list plus controls needs 34 interior rows, so without this the agents
 # section opens below the fold.
 # Herdr clamps to the terminal, and the pane still scrolls when it has to.
 width = 78
-height = 35
+height = 36

@@ -472,11 +472,12 @@ pub fn event() -> Result<()> {
     // current returns the finisher and would skip teal for every completion.
     // `handle_named_pane` folds the working set into status before publish.
     // Pi's and omp's exact session files carry the routing evidence, and
-    // Muse/Cursor transcripts record the prompt itself. Reading their panes
-    // would add a visible repaint without improving attribution or the topic.
+    // Muse/Cursor transcripts and Hermes's session title record the prompt
+    // itself. Reading their panes would add a visible repaint without
+    // improving attribution or the topic.
     let topic_pane = (!matches!(
         harness,
-        Harness::Pi | Harness::Omp | Harness::Muse | Harness::Cursor
+        Harness::Pi | Harness::Omp | Harness::Muse | Harness::Cursor | Harness::Hermes
     ))
     .then_some(pane_id);
     let result = handle_named_pane(
@@ -752,7 +753,7 @@ fn apply_session_summary(pane: &mut AgentPane, summary: &str) {
     pane.session_summary = summary.to_string();
     if matches!(
         pane.harness,
-        Harness::Muse | Harness::Cursor | Harness::Grok
+        Harness::Muse | Harness::Cursor | Harness::Grok | Harness::Hermes
     ) {
         pane.topic = summary.to_string();
     }
@@ -771,7 +772,11 @@ fn resolved_pane_tokens(
         identity,
         context,
         omp,
+        session_summary,
     } = resolved;
+    if let Some(summary) = session_summary.as_deref() {
+        apply_session_summary(pane, summary);
+    }
     let mut quota = match resolution {
         Resolution::Subscription(target)
             if target.credential_scope == CredentialScope::OMP_STORE =>
