@@ -13,8 +13,8 @@
 
 use crate::cache::CacheStore;
 use crate::cli::{
-    AgentOrder, AgentSelection, FieldSet, LowQuotaAlert, PercentStyle, SidebarField, SidebarLayout,
-    SidebarRowGap,
+    AgentOrder, AgentSelection, FieldSet, IdleRefresh, LowQuotaAlert, PercentStyle, SidebarField,
+    SidebarLayout, SidebarRowGap,
 };
 use crate::model::Harness;
 use crate::prefs;
@@ -46,6 +46,7 @@ enum Choice {
     Interval,
     Order,
     Alert,
+    IdleRefresh,
 }
 
 impl Choice {
@@ -57,6 +58,7 @@ impl Choice {
             Self::Interval => "Watch interval",
             Self::Order => "Agent order",
             Self::Alert => "Low quota alert",
+            Self::IdleRefresh => "Idle refresh",
         }
     }
 }
@@ -70,6 +72,7 @@ fn rows() -> Vec<Row> {
         Row::Choice(Choice::Interval),
         Row::Choice(Choice::Order),
         Row::Choice(Choice::Alert),
+        Row::Choice(Choice::IdleRefresh),
         Row::Header("Fields"),
     ];
     rows.extend(SidebarField::ALL.into_iter().map(Row::Field));
@@ -87,7 +90,9 @@ pub struct Settings {
     interval_seconds: u64,
     order: AgentOrder,
     alert: LowQuotaAlert,
+    idle_refresh: IdleRefresh,
     fields: FieldSet,
+
     /// Indexed by [`AgentSelection::SUPPORTED`], so the whole struct stays
     /// `Copy` and comparing a draft to what is applied is one `==`.
     agents: [bool; AgentSelection::SUPPORTED.len()],
@@ -111,7 +116,9 @@ impl Settings {
                 .unwrap_or(crate::cache::DEFAULT_WATCH_INTERVAL_SECONDS),
             order: crate::configure::resolved_agent_order(None, cache),
             alert: crate::configure::resolved_low_quota_alert(None, cache),
+            idle_refresh: crate::configure::resolved_idle_refresh(None, cache),
             fields: crate::configure::resolved_fields(None, cache),
+
             agents,
         }
     }
@@ -124,6 +131,7 @@ impl Settings {
             Choice::Interval => format_interval(self.interval_seconds),
             Choice::Order => self.order.as_str().to_string(),
             Choice::Alert => self.alert.to_string(),
+            Choice::IdleRefresh => self.idle_refresh.as_str().to_string(),
         }
     }
 
@@ -160,6 +168,10 @@ impl Settings {
             Choice::Alert => match self.alert.is_off() {
                 true => "no notification",
                 false => "notify once per provider on the way down",
+            },
+            Choice::IdleRefresh => match self.idle_refresh.is_on() {
+                true => "Codex/Grok ≤1 fetch/min while open",
+                false => "Codex/Grok fetched while working",
             },
         }
     }
@@ -225,6 +237,12 @@ impl Settings {
                 let next = (current as i8 + step).rem_euclid(count);
                 self.alert = LowQuotaAlert::CHOICES[next as usize];
             }
+            Row::Choice(Choice::IdleRefresh) => {
+                self.idle_refresh = match self.idle_refresh {
+                    IdleRefresh::Off => IdleRefresh::On,
+                    IdleRefresh::On => IdleRefresh::Off,
+                }
+            }
             Row::Choice(Choice::Interval) => {
                 let current = INTERVALS
                     .iter()
@@ -269,7 +287,10 @@ impl Settings {
             self.order.as_str().to_string(),
             "--low-quota-alert".to_string(),
             self.alert.to_string(),
+            "--idle-refresh".to_string(),
+            self.idle_refresh.as_str().to_string(),
         ];
+
         arguments.push("--watch-interval-seconds".to_string());
         arguments.push(self.interval_seconds.to_string());
         arguments
@@ -599,7 +620,9 @@ mod tests {
             interval_seconds: 60,
             order: AgentOrder::Quota,
             alert: LowQuotaAlert::OFF,
+            idle_refresh: IdleRefresh::Off,
             fields: FieldSet::all(),
+
             agents: [true; AgentSelection::SUPPORTED.len()],
         }
     }
@@ -710,6 +733,8 @@ mod tests {
                 "--agent-order",
                 "quota",
                 "--low-quota-alert",
+                "off",
+                "--idle-refresh",
                 "off",
                 "--watch-interval-seconds",
                 "60",

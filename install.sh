@@ -11,7 +11,9 @@
 #   ./install.sh --fields topic,model,context,5h,7d
 #   ./install.sh --agent-order default
 #   ./install.sh --low-quota-alert 10
+#   ./install.sh --idle-refresh on
 #
+
 # --agent installs only the agents you name (all, claude, codex, grok, agy,
 # opencode, pi, omp, devin, muse, cursor, hermes). Anything you leave out gets no sidebar row, no
 # statusLine entry and no hook file. The default is every supported agent.
@@ -43,6 +45,11 @@
 # per provider, when its remaining quota falls to that number or below, and
 # again only after it has recovered above it.
 #
+# --idle-refresh off (default) fetches Codex and Grok only while such a pane
+# is working. on keeps them fetched while a pane billed to them is open, at
+# most once per minute per provider.
+#
+
 # Everything here can also be changed later in the Agent quota settings pane.
 #
 # Every option is written to the plugin config directory before configure runs.
@@ -65,6 +72,8 @@ QUOTA_PERCENT=""
 FIELDS=""
 AGENT_ORDER=""
 LOW_QUOTA_ALERT=""
+IDLE_REFRESH=""
+
 
 while (($# > 0)); do
   case "$1" in
@@ -116,8 +125,14 @@ while (($# > 0)); do
       LOW_QUOTA_ALERT="$2"
       shift 2
       ;;
+    --idle-refresh)
+      (($# >= 2)) || { printf 'error: missing value for %s\n' "$1" >&2; exit 1; }
+      IDLE_REFRESH="$2"
+      shift 2
+      ;;
+
     -h|--help)
-      sed -n '2,53p' "$0"
+      sed -n '2,58p' "$0"
       exit 0
       ;;
     *)
@@ -158,7 +173,12 @@ case "$LOW_QUOTA_ALERT" in
   *) ((LOW_QUOTA_ALERT <= 100)) \
     || die "low-quota-alert must be off or a percentage from 0 to 100" ;;
 esac
+case "$IDLE_REFRESH" in
+  ""|on|off) ;;
+  *) die "idle-refresh must be on or off" ;;
+esac
 # The field list is validated by configure, which owns the field names.
+
 
 printf '%s\n' '→ building herdr-agent-usage'
 cargo build --release --locked --manifest-path "$ROOT/Cargo.toml"
@@ -191,6 +211,8 @@ write_plugin_pref quota-percent "$QUOTA_PERCENT"
 write_plugin_pref fields "$FIELDS"
 write_plugin_pref agent-order "$AGENT_ORDER"
 write_plugin_pref low-quota-alert "$LOW_QUOTA_ALERT"
+write_plugin_pref idle-refresh "$IDLE_REFRESH"
+
 
 printf '%s\n' '→ installing reversible sidebar and provider collectors'
 invoke_action_and_wait configure || die "configuration action failed"

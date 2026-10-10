@@ -14,6 +14,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   to the hour and the day (`7d 54% 3d13h · 40m old`). The age never triggers a
   fetch or a watch pass on its own. Claude rows that already read `stale`
   keep that label instead.
+- `Idle refresh` setting (`--idle-refresh on|off`,
+  `HERDR_AGENT_QUOTA_IDLE_REFRESH`), off by default. On, the existing watcher
+  keeps running while a pane billed to Codex or Grok is open and refreshes
+  those two providers on the same identity-gated path a working pane uses,
+  at most once per minute per provider. A pane opening starts the pulse;
+  nothing is fetched without such a pane, and omp panes are never included.
+
 
 ### Changed
 

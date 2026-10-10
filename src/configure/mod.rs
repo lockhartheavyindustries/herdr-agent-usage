@@ -9,8 +9,8 @@ mod statusline;
 
 use crate::cache::CacheStore;
 use crate::cli::{
-    AgentOrder, AgentSelection, BrandColors, ConfigureOptions, FieldSet, LowQuotaAlert,
-    PercentStyle, SidebarLayout, SidebarRowGap,
+    AgentOrder, AgentSelection, BrandColors, ConfigureOptions, FieldSet, IdleRefresh,
+    LowQuotaAlert, PercentStyle, SidebarLayout, SidebarRowGap,
 };
 use crate::model::Harness;
 use crate::prefs;
@@ -83,7 +83,9 @@ pub fn run(
             cache.clear_brand_colors()?;
             cache.clear_agent_order()?;
             cache.clear_low_quota_alert()?;
+            cache.clear_idle_refresh()?;
             cache.clear_icon_attention()?;
+
             for name in prefs::ALL {
                 prefs::clear(name)?;
             }
@@ -133,7 +135,14 @@ pub fn run(
         }
         cache.set_low_quota_alert(alert)?;
         prefs::write(prefs::LOW_QUOTA_ALERT, &alert.to_string())?;
+        // The watcher reads this on every tick, so a running one picks the
+        // change up without a restart; the forced refresh that follows an
+        // apply starts one if none is running.
+        let idle_refresh = resolved_idle_refresh(options.idle_refresh, Some(&cache));
+        cache.set_idle_refresh(idle_refresh)?;
+        prefs::write(prefs::IDLE_REFRESH, idle_refresh.as_str())?;
         herdr::apply(agents, layout, gap, fields, brand)?;
+
         for note in font::install(cache.root())? {
             println!("{note}");
         }
@@ -168,10 +177,13 @@ pub fn run(
         let brand = resolved_brand_colors(options.brand_colors, cache.as_ref());
         let order = resolved_agent_order(options.agent_order, cache.as_ref());
         let alert = resolved_low_quota_alert(options.low_quota_alert, cache.as_ref());
+        let idle_refresh = resolved_idle_refresh(options.idle_refresh, cache.as_ref());
         herdr::check(agents, layout, gap, fields, brand)?;
         println!("Quota percentages show {} quota.", percent.suffix());
         println!("Agent panel order: {}.", order.as_str());
         println!("Low quota alert: {alert}.");
+        println!("Idle refresh of Codex and Grok: {}.", idle_refresh.as_str());
+
         if agents.contains(&Harness::Claude) {
             claude::check()?;
         }
@@ -247,6 +259,16 @@ pub(crate) fn resolved_low_quota_alert(
             prefs::read(prefs::LOW_QUOTA_ALERT).and_then(|value| LowQuotaAlert::parse(&value))
         })
         .or_else(|| cache.and_then(CacheStore::low_quota_alert))
+        .unwrap_or_default()
+}
+
+pub(crate) fn resolved_idle_refresh(
+    explicit: Option<IdleRefresh>,
+    cache: Option<&CacheStore>,
+) -> IdleRefresh {
+    IdleRefresh::from_arg_or_env(explicit)
+        .or_else(|| prefs::read(prefs::IDLE_REFRESH).and_then(|value| IdleRefresh::parse(&value)))
+        .or_else(|| cache.and_then(CacheStore::idle_refresh))
         .unwrap_or_default()
 }
 

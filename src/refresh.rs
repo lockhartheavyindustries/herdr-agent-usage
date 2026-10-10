@@ -27,6 +27,11 @@ use std::time::{Duration, Instant, SystemTime};
 use std::os::unix::process::CommandExt;
 
 const MAX_ACTIVE_TURN_WATCH: Duration = Duration::from_secs(60 * 60);
+/// The collectors idle refresh keeps current. Both call the provider directly
+/// and are otherwise fetched only by a working pane; every other collector
+/// is a hook mailbox or already refreshes per resolved pane.
+const IDLE_REFRESH_PROVIDERS: [Provider; 2] = [Provider::Codex, Provider::Grok];
+
 const TURN_WATCH_LOCK: &str = "turn.lock";
 const WATCH_HERDR_ENV: &str = "watch-herdr.json";
 
@@ -169,7 +174,14 @@ pub fn watch(providers: &[Provider], interval_seconds: Option<u64>, defer: bool)
             .cloned()
             .collect::<Vec<_>>();
         let now = CacheStore::now_unix();
-        let affected = watch_pass_ids(
+        // Read per tick so the settings pane can turn it on or off under a
+        // running watcher.
+        let idle = if cache.idle_refresh().unwrap_or_default().is_on() {
+            idle_refresh_pane_ids(&state.panes, providers)
+        } else {
+            Vec::new()
+        };
+        let mut affected = watch_pass_ids(
             &cache,
             &state.panes,
             providers,
@@ -178,6 +190,12 @@ pub fn watch(providers: &[Provider], interval_seconds: Option<u64>, defer: bool)
             &mut settling,
             now,
         );
+        for id in &idle {
+            if !affected.contains(id) {
+                affected.push(id.clone());
+            }
+        }
+
         // Fold plugin unseen-state into pane.status before any publish so a
         // same-tab idle inventory cannot paint white over a completion the
         // user has not focused yet.
@@ -193,14 +211,23 @@ pub fn watch(providers: &[Provider], interval_seconds: Option<u64>, defer: bool)
         if active.is_empty()
             && settling.is_empty()
             && !stale_icons
+            && idle.is_empty()
             && cache.icon_attention().unseen.is_empty()
         {
             break;
         }
         previous_active = active;
         if started.elapsed() >= MAX_ACTIVE_TURN_WATCH && cache.icon_attention().unseen.is_empty() {
+            // Idle refresh keeps a pulse alive for as long as such a pane is
+            // open. Hand over to a fresh process rather than outlive the cap:
+            // the cap is what bounds an orphan, and a restart keeps that.
+            if !idle.is_empty() {
+                drop(_lock);
+                return reexec_watch(server.as_ref(), interval_seconds);
+            }
             break;
         }
+
         wait_for_watch_tick(&cache, interval, started_at, started_millis);
     }
     Ok(())
@@ -225,6 +252,27 @@ fn watch_targets(
     affected.extend(settling.keys().cloned());
     settling.retain(|_, finished| now.saturating_sub(*finished) < 60);
     affected
+}
+
+/// Open panes billed to a provider idle refresh covers, through the same
+/// routing a working pane uses, so the fetch and the publish stay on the
+/// identity-gated path and never reach an omp credential store.
+fn idle_refresh_pane_ids(panes: &[AgentPane], providers: &[Provider]) -> Vec<String> {
+    panes
+        .iter()
+        .filter(|pane| pane_in_watch_scope(pane, providers))
+        .filter(|pane| {
+            matches!(
+                route::resolve(pane),
+                Resolution::Subscription(target)
+                    if target.credential_scope != CredentialScope::OMP_STORE
+                        && target
+                            .original_provider()
+                            .is_some_and(|provider| IDLE_REFRESH_PROVIDERS.contains(&provider))
+            )
+        })
+        .map(|pane| pane.pane_id.clone())
+        .collect()
 }
 
 fn pane_in_watch_scope(pane: &AgentPane, providers: &[Provider]) -> bool {
@@ -393,7 +441,13 @@ fn run_internal(
     WatchHerdrEnvironment::current().save(&cache)?;
     if force {
         restore_quota_agent_view(&cache);
+        // The settings pane applies with a forced refresh, not startup, so
+        // this is where turning idle refresh on has to start its pulse.
+        if cache.idle_refresh().unwrap_or_default().is_on() {
+            let _ = spawn_watch(false);
+        }
     }
+
     // Agent inventory is metadata-only. Reusing it for both the fetch and the
     // publish pass lets local Codex/Grok diagnostics target the exact pane
     // sessions without adding another Herdr call or reading any pane output.
@@ -486,7 +540,9 @@ pub fn event() -> Result<()> {
         topic_pane,
         status.is_some_and(is_working_status),
     );
-    if status.is_some_and(is_working_status) {
+    // With idle refresh on, a pane opening is reason enough for a pulse; the
+    // watcher lock makes this a no-op while one is already running.
+    if status.is_some_and(is_working_status) || cache.idle_refresh().unwrap_or_default().is_on() {
         if let Err(error) = spawn_watch(true) {
             if result.is_ok() {
                 return Err(error);
@@ -1971,6 +2027,28 @@ mod tests {
         );
         assert!(affected.contains(&"codex-idle".to_string()));
         assert!(affected.contains(&grok));
+    }
+
+    /// Idle refresh names the open Codex and Grok panes and nothing else: a
+    /// Claude pane is a hook mailbox, and a narrower `--provider` selection
+    /// keeps the pane out exactly as it keeps it out of a working pass.
+    #[test]
+    fn idle_refresh_names_open_codex_and_grok_panes_only() {
+        let panes = [
+            test_pane("codex-idle", Harness::Codex),
+            test_pane("grok-idle", Harness::Grok),
+            test_pane("claude-idle", Harness::Claude),
+            test_pane("devin-idle", Harness::Devin),
+        ];
+        assert_eq!(
+            idle_refresh_pane_ids(&panes, &Provider::ALL),
+            vec!["codex-idle".to_string(), "grok-idle".to_string()]
+        );
+        assert_eq!(
+            idle_refresh_pane_ids(&panes, &[Provider::Grok]),
+            vec!["grok-idle".to_string()]
+        );
+        assert!(idle_refresh_pane_ids(&panes, &[Provider::Claude]).is_empty());
     }
 
     #[test]

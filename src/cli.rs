@@ -133,7 +133,14 @@ pub enum Command {
         /// percentage or below. `off` (default) never notifies.
         #[arg(long, value_parser = parse_low_quota_alert)]
         low_quota_alert: Option<LowQuotaAlert>,
+        /// Keep Codex and Grok readings current while a pane billed to them
+        /// is open but idle: `on` costs up to one provider request per
+        /// minute per provider; `off` (default) fetches only while such a
+        /// pane is working.
+        #[arg(long, value_enum)]
+        idle_refresh: Option<IdleRefresh>,
     },
+
     /// Render the settings pane shown in the Herdr popup pane.
     Settings,
     /// Claude statusLine hook. Claude Code invokes this; not for manual use.
@@ -509,6 +516,7 @@ pub struct ConfigureOptions {
     pub brand_colors: Option<BrandColors>,
     pub agent_order: Option<AgentOrder>,
     pub low_quota_alert: Option<LowQuotaAlert>,
+    pub idle_refresh: Option<IdleRefresh>,
 }
 
 /// Which side of a quota window a percentage reports.
@@ -668,6 +676,52 @@ impl AgentOrder {
         match name.trim().to_ascii_lowercase().as_str() {
             "default" | "herdr" | "off" => Some(Self::Default),
             "quota" | "headroom" | "grouped" | "on" => Some(Self::Quota),
+            _ => None,
+        }
+    }
+
+    pub fn from_arg_or_env(value: Option<Self>) -> Option<Self> {
+        if value.is_some() {
+            return value;
+        }
+        std::env::var(Self::ENV)
+            .ok()
+            .as_deref()
+            .and_then(Self::parse)
+    }
+}
+
+/// Whether the watcher keeps Codex and Grok readings current while a pane
+/// billed to one of them is open but idle.
+///
+/// Off by default: those two collectors call the provider directly, so `on`
+/// spends up to one request per minute per provider for as long as such a
+/// pane exists, instead of only while it is working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum IdleRefresh {
+    #[default]
+    Off,
+    On,
+}
+
+impl IdleRefresh {
+    pub const ENV: &'static str = "HERDR_AGENT_QUOTA_IDLE_REFRESH";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+
+    pub fn is_on(self) -> bool {
+        self == Self::On
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "off" | "false" | "no" | "0" => Some(Self::Off),
+            "on" | "true" | "yes" | "1" => Some(Self::On),
             _ => None,
         }
     }
@@ -990,6 +1044,17 @@ impl AgentSelection {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn idle_refresh_round_trips_through_its_stored_form_and_defaults_off() {
+        for value in [IdleRefresh::Off, IdleRefresh::On] {
+            assert_eq!(IdleRefresh::parse(value.as_str()), Some(value));
+        }
+        assert_eq!(IdleRefresh::parse(" ON "), Some(IdleRefresh::On));
+        assert_eq!(IdleRefresh::parse("0"), Some(IdleRefresh::Off));
+        assert_eq!(IdleRefresh::parse("sometimes"), None);
+        assert!(!IdleRefresh::default().is_on());
+    }
 
     #[test]
     fn an_agent_order_round_trips_through_its_stored_form() {

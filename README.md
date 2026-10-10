@@ -169,7 +169,9 @@ herdr plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus
 | Fields | Provider, topic, model, context, short/long/monthly quota on by default; cache and TTL optional |
 | Agent order | Group by Space, least quota left first (default); or Herdr's own policy |
 | Low quota alert | Off or a threshold from 1% to 100% |
+| Idle refresh | Off (default): Codex and Grok are fetched only while such a pane is working. On: fetched while a pane billed to them is open, at most once per minute per provider |
 | Agents | Claude, Codex, Grok, Agy, OpenCode, Pi, OMP, Devin, Muse, Cursor, Hermes |
+
 
 Use arrows or Space to edit, `a` to apply, and `q` to close.
 Installer options are also available through `./install.sh --help`.

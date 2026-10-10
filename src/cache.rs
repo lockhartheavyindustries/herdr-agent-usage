@@ -1,5 +1,6 @@
 use crate::cli::{
-    AgentOrder, BrandColors, FieldSet, LowQuotaAlert, PercentStyle, SidebarLayout, SidebarRowGap,
+    AgentOrder, BrandColors, FieldSet, IdleRefresh, LowQuotaAlert, PercentStyle, SidebarLayout,
+    SidebarRowGap,
 };
 use crate::identity::PLUGIN_ID;
 use crate::model::{
@@ -27,6 +28,8 @@ const FIELDS_FILE: &str = "fields";
 const BRAND_COLORS_FILE: &str = "brand-colors";
 const AGENT_ORDER_FILE: &str = "agent-order";
 const LOW_QUOTA_ALERT_FILE: &str = "low-quota-alert";
+const IDLE_REFRESH_FILE: &str = "idle-refresh";
+
 /// One line per provider that is currently below the alert threshold, so a
 /// crossing notifies once instead of on every refresh.
 const LOW_QUOTA_ALERTED_FILE: &str = "low-quota-alerted";
@@ -718,6 +721,26 @@ impl CacheStore {
         }
     }
 
+    pub fn idle_refresh(&self) -> Option<IdleRefresh> {
+        fs::read_to_string(self.idle_refresh_path())
+            .ok()
+            .as_deref()
+            .and_then(IdleRefresh::parse)
+    }
+
+    pub fn set_idle_refresh(&self, idle_refresh: IdleRefresh) -> Result<()> {
+        self.ensure()?;
+        fs::write(self.idle_refresh_path(), idle_refresh.as_str()).context("write idle refresh")
+    }
+
+    pub fn clear_idle_refresh(&self) -> Result<()> {
+        match fs::remove_file(self.idle_refresh_path()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("remove idle refresh"),
+        }
+    }
+
     pub fn low_quota_alert(&self) -> Option<LowQuotaAlert> {
         fs::read_to_string(self.low_quota_alert_path())
             .ok()
@@ -974,6 +997,10 @@ impl CacheStore {
 
     fn low_quota_alert_path(&self) -> PathBuf {
         self.root.join(LOW_QUOTA_ALERT_FILE)
+    }
+
+    fn idle_refresh_path(&self) -> PathBuf {
+        self.root.join(IDLE_REFRESH_FILE)
     }
 
     fn low_quota_alerted_path(&self) -> PathBuf {

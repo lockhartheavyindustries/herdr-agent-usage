@@ -54,6 +54,7 @@ fn main() -> Result<()> {
             brand_colors,
             agent_order,
             low_quota_alert,
+            idle_refresh,
         } => herdr_agent_quota::configure::run(
             check,
             apply,
@@ -68,6 +69,7 @@ fn main() -> Result<()> {
                 brand_colors,
                 agent_order,
                 low_quota_alert,
+                idle_refresh,
             },
         ),
         Command::ClaudeStatusline => herdr_agent_quota::configure::claude::run_statusline_hook(),

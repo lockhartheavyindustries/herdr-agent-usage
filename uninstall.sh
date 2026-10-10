@@ -6,7 +6,9 @@
 #   ./uninstall.sh --agent grok       # remove only that agent, stay installed
 #
 # A full uninstall also drops the saved sidebar-layout, row-gap,
-# quota-percent, fields, brand-colors, agent-order, and low-quota-alert prefs,
+# quota-percent, fields, brand-colors, agent-order, low-quota-alert, and
+# idle-refresh prefs,
+
 # and hands Herdr's agent panel back its own ordering.
 #
 # The restore action runs, and is waited for, before unlinking: Herdr owns the
