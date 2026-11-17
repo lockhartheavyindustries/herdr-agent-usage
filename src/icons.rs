@@ -37,6 +37,16 @@ pub fn for_harness(harness: Harness) -> &'static str {
     }
 }
 
+/// The harness whose mark `icon` carries, ignoring group indent and status
+/// tags. `None` when it holds no known mark (never published, or cleared).
+pub fn harness_for_icon(icon: &str) -> Option<Harness> {
+    icon.chars().find_map(|c| {
+        crate::cli::AgentSelection::SUPPORTED
+            .into_iter()
+            .find(|harness| for_harness(*harness).starts_with(c))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

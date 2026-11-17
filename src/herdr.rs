@@ -932,6 +932,10 @@ fn collect_agent_panes(value: &Value, panes: &mut Vec<AgentPane>) {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
+                    // The tokens on a pane outlive the agent that earned them. A
+                    // relaunch into another harness must not inherit its
+                    // topic or session summary.
+                    let foreign = tokens_belong_to_other_agent(harness, &tokens);
                     panes.push(AgentPane {
                         pane_id: pane_id.to_string(),
                         workspace_id,
@@ -939,10 +943,14 @@ fn collect_agent_panes(value: &Value, panes: &mut Vec<AgentPane>) {
                         title,
                         harness,
                         session,
-                        session_summary,
+                        session_summary: if foreign {
+                            String::new()
+                        } else {
+                            session_summary
+                        },
                         // Preserve the last published topic during quota-only
                         // refreshes. Agent events refresh it from pane output.
-                        topic,
+                        topic: if foreign { String::new() } else { topic },
                         tokens,
                         status,
                         focused,
@@ -1026,6 +1034,20 @@ fn collect_working_providers(
     }
 }
 
+/// True when the `$quota_icon` already on a pane carries another harness's
+/// mark: the pane was relaunched into a different agent and everything the
+/// plugin published for the old one (model, quota, context, topic) is stale.
+/// A pane with no recognisable mark is trusted, so old installs keep working.
+pub(crate) fn tokens_belong_to_other_agent(
+    harness: Harness,
+    tokens: &BTreeMap<String, String>,
+) -> bool {
+    tokens
+        .get("quota_icon")
+        .and_then(|icon| crate::icons::harness_for_icon(icon))
+        .is_some_and(|published| published != harness)
+}
+
 pub fn publish_pane_tokens(
     panes: &[AgentPane],
     tokens: &[PaneTokens],
@@ -1083,6 +1105,11 @@ pub fn publish_icon_tokens(panes: &[AgentPane], sequence: u64) -> Result<()> {
     let mut reported = 0;
     let mut failed = Vec::new();
     for pane in panes {
+        // Rewriting only the mark would hide the relaunch from the next full
+        // publish, which is what drops the old agent's tokens.
+        if tokens_belong_to_other_agent(pane.harness, &pane.tokens) {
+            continue;
+        }
         let mut desired = pane.tokens.clone();
         let role = vendor_row_for(wide, &nesting, &pane.pane_id);
         apply_group_and_icon(
@@ -1147,6 +1174,13 @@ fn publish_pane_tokens_inner(
         let mut desired = match &pane_tokens.quota {
             PaneQuotaUpdate::Replace(values) => desired_tokens(values, &topic, row.shape),
             PaneQuotaUpdate::Clear => desired_cleared_quota(pane),
+            PaneQuotaUpdate::Preserve
+                if tokens_belong_to_other_agent(pane.harness, &pane.tokens) =>
+            {
+                // Nothing known for this agent yet: show nothing rather than
+                // the previous agent's model, quota and context.
+                desired_cleared_quota(pane)
+            }
             PaneQuotaUpdate::Preserve => pane.tokens.clone(),
         };
         let role = vendor_row_for(wide, &nesting, &pane.pane_id);
@@ -1221,7 +1255,10 @@ fn publish_pane_tokens_inner(
         // reading scrollback; the next refresh after they return catches up.
         // Icon-only sync may proceed while scrolled — see publish_status_icons.
         if pane_is_scrolled(&executable, &pane.pane_id) {
-            if !allow_while_scrolled || icon_tokens_match(&pane.tokens, &desired) {
+            if !allow_while_scrolled
+                || icon_tokens_match(&pane.tokens, &desired)
+                || tokens_belong_to_other_agent(pane.harness, &pane.tokens)
+            {
                 continue;
             }
             reported += 1;
@@ -3388,6 +3425,60 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// A pane relaunched from opencode into Cursor keeps the opencode tokens
+    /// Herdr stored for it. The inventory must not hand that model, quota or
+    /// topic to the new agent, and the icon-only paths must not overwrite the
+    /// old mark, because the mark is how the next full publish recognises the
+    /// relaunch.
+    #[test]
+    fn a_pane_relaunched_into_another_agent_drops_the_old_agents_labels() {
+        let value = json!({"result": {"agents": [
+            {"pane_id": "w1:p2", "agent": "cursor", "agent_status": "idle",
+             "cwd": "/project",
+             "agent_session": {"kind": "id", "value": "cursor-1"},
+             "tokens": {
+                "quota_icon": "\u{e1a2}",
+                "quota_provider_model": "zai-coding-plan/glm-5.3",
+                "quota_topic": "No, exit",
+                "quota_session": "No, exit"
+             }},
+            {"pane_id": "w1:p3", "agent": "opencode", "agent_status": "idle",
+             "cwd": "/project",
+             "tokens": {
+                "quota_icon": "\u{200b}  \u{e1a2}\u{2060}",
+                "quota_topic": "same agent"
+             }}
+        ]}});
+        let state = agent_state_from(&value, |_| {});
+        let relaunched = &state.panes[0];
+        assert!(tokens_belong_to_other_agent(
+            relaunched.harness,
+            &relaunched.tokens
+        ));
+        assert_eq!(relaunched.topic, "");
+        assert_eq!(relaunched.session_summary, "");
+        assert_eq!(display_topic(relaunched), "");
+        // Stale names stay on the pane so the next report can clear them.
+        assert!(relaunched.tokens.contains_key("quota_provider_model"));
+        let cleared = desired_cleared_quota(relaunched);
+        assert!(cleared.is_empty(), "{cleared:?}");
+        assert!(!metadata_matches(&relaunched.tokens, &cleared));
+
+        let same = &state.panes[1];
+        assert!(!tokens_belong_to_other_agent(same.harness, &same.tokens));
+        assert_eq!(same.topic, "same agent");
+    }
+
+    #[test]
+    fn panes_without_a_recognisable_mark_are_trusted() {
+        assert!(!tokens_belong_to_other_agent(
+            Harness::Cursor,
+            &BTreeMap::new()
+        ));
+        let legacy = BTreeMap::from([("quota_icon".to_string(), "x".to_string())]);
+        assert!(!tokens_belong_to_other_agent(Harness::Cursor, &legacy));
     }
 
     /// The watcher republishes working panes from `list_agent_state`. Two
