@@ -1042,10 +1042,35 @@ pub(crate) fn tokens_belong_to_other_agent(
     harness: Harness,
     tokens: &BTreeMap<String, String>,
 ) -> bool {
-    tokens
+    let icon_is_foreign = tokens
         .get("quota_icon")
         .and_then(|icon| crate::icons::harness_for_icon(icon))
-        .is_some_and(|published| published != harness)
+        .is_some_and(|published| published != harness);
+    icon_is_foreign || provider_label_is_foreign(harness, tokens)
+}
+
+/// The icon is rewritten as soon as a pane is recognised as another agent, so
+/// it can already be right while the model, topic and session text still come
+/// from the old agent. A single-vendor harness only ever publishes its own
+/// provider name (`Cursor/...`); a different one (`zai-coding-plan/glm-5.3`)
+/// proves the label is stale. Multi-provider harnesses name arbitrary
+/// providers, so they are left to the icon check.
+fn provider_label_is_foreign(harness: Harness, tokens: &BTreeMap<String, String>) -> bool {
+    let Some(own) = harness.billing() else {
+        return false;
+    };
+    let published = tokens
+        .get("quota_provider")
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            tokens
+                .get("quota_provider_model")
+                .and_then(|label| label.split_once('/'))
+                .map(|(provider, _)| provider)
+        })
+        .map(|provider| provider.trim_start_matches(GROUP_MEMBER_INDENT).trim());
+    published.is_some_and(|provider| !provider.is_empty() && provider != own.display_name())
 }
 
 pub fn publish_pane_tokens(
@@ -3469,6 +3494,52 @@ mod tests {
         let same = &state.panes[1];
         assert!(!tokens_belong_to_other_agent(same.harness, &same.tokens));
         assert_eq!(same.topic, "same agent");
+    }
+
+    /// Live state on two Firstmate Cursor workers: the icon was already
+    /// Cursor's (mark plus working tag) when the plugin first saw the pane
+    /// as Cursor, but the model, topic and session were OpenCode's.
+    #[test]
+    fn a_cursor_pane_with_cursor_icon_but_opencode_labels_is_cleared() {
+        let value = json!({"result": {"agents": [
+            {"pane_id": "w1:p2", "agent": "cursor", "agent_status": "working",
+             "cwd": "/project",
+             "tokens": {
+                "quota_icon": "\u{e1ab}\u{2061}",
+                "quota_provider_model": "zai-coding-plan/glm-5.3",
+                "quota_topic": "No, exit",
+                "quota_session": "No, exit"
+             }},
+            {"pane_id": "w1:p3", "agent": "cursor", "agent_status": "idle",
+             "cwd": "/project",
+             "tokens": {
+                "quota_icon": "\u{e1ab}",
+                "quota_provider_model": "Cursor/grok-4.7-high",
+                "quota_topic": "own topic"
+             }}
+        ]}});
+        let state = agent_state_from(&value, |_| {});
+        let stale = &state.panes[0];
+        assert!(tokens_belong_to_other_agent(stale.harness, &stale.tokens));
+        assert_eq!(stale.topic, "");
+        assert_eq!(stale.session_summary, "");
+        let cleared = desired_cleared_quota(stale);
+        assert!(cleared.is_empty(), "{cleared:?}");
+        assert!(!metadata_matches(&stale.tokens, &cleared));
+
+        let own = &state.panes[1];
+        assert!(!tokens_belong_to_other_agent(own.harness, &own.tokens));
+        assert_eq!(own.topic, "own topic");
+    }
+
+    #[test]
+    fn multi_provider_harnesses_keep_arbitrary_provider_labels() {
+        let tokens = BTreeMap::from([(
+            "quota_provider_model".to_string(),
+            "zai-coding-plan/glm-5.3".to_string(),
+        )]);
+        assert!(!tokens_belong_to_other_agent(Harness::OpenCode, &tokens));
+        assert!(tokens_belong_to_other_agent(Harness::Cursor, &tokens));
     }
 
     #[test]
