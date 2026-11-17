@@ -1857,6 +1857,23 @@ fn tokens_for_loaded_snapshot(
             cursor::overlay_live_context(&mut snapshot, session_id);
             Some(&*overlaid.insert(snapshot))
         }
+        (Provider::Claude, Some(snapshot))
+            if session_id.is_some_and(|id| !snapshot.session_models.contains_key(id)) =>
+        {
+            // The statusLine hook never reported this session. Its own
+            // transcript still names the model it last answered with.
+            let session_id = session_id.unwrap_or_default();
+            match crate::providers::claude::transcript_model(session_id) {
+                Some(model) => {
+                    let mut snapshot = snapshot.clone();
+                    snapshot
+                        .session_models
+                        .insert(session_id.to_string(), model);
+                    Some(&*overlaid.insert(snapshot))
+                }
+                None => Some(snapshot),
+            }
+        }
         (_, usable) => usable,
     };
     match (usable, raw) {
@@ -2998,6 +3015,49 @@ mod tests {
         );
         // A failure must not masquerade as a lapsed prompt cache.
         assert_eq!(values.quota_cache_state, "");
+    }
+
+    #[test]
+    fn claude_pane_without_a_statusline_model_uses_its_transcript_model() {
+        let _guard = crate::providers::test_support::env_guard();
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("projects/-p");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("sess-a.jsonl"),
+            r#"{"type":"assistant","message":{"model":"claude-opus-5-5"}}"#,
+        )
+        .unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", dir.path());
+        let mut snapshot = ProviderSnapshot::new(
+            Provider::Claude,
+            vec![UsageWindow::new(WindowKind::Weekly, 40.0, None).unwrap()],
+            1,
+        )
+        .session_local();
+        snapshot
+            .session_models
+            .insert("sess-b".to_string(), "Fable 5.2".to_string());
+        let tokens = |session| {
+            tokens_for_loaded_snapshot(
+                Provider::Claude,
+                Some(&snapshot),
+                Some(&snapshot),
+                1,
+                Some(session),
+                RowStyle::default(),
+            )
+            .unwrap()
+        };
+        let transcript = tokens("sess-a");
+        let reported = tokens("sess-b");
+        let unknown = tokens("sess-c");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        assert_eq!(transcript.quota_provider_model, "Claude/Opus 5.5");
+        // The statusLine value wins over the transcript, and an unknown
+        // session with no transcript stays a bare "Claude".
+        assert_eq!(reported.quota_provider_model, "Claude/Fable 5.2");
+        assert_eq!(unknown.quota_provider_model, "Claude");
     }
 
     #[test]

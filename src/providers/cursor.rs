@@ -1260,6 +1260,28 @@ pub fn overlay_hook_context_at(
     }
 }
 
+/// The model a Cursor pane is running, from this plugin's own hook mailbox
+/// for that pane's session, else the CLI's current model setting (when file
+/// access is allowed). Never another provider's label, and `None` rather than
+/// a guess. Works without a quota snapshot, so a pane whose login is not yet
+/// approved still names its model.
+pub fn pane_model(session_id: &str) -> Option<String> {
+    let root = CacheStore::from_env().ok()?;
+    pane_model_at(root.root(), session_id)
+}
+
+pub fn pane_model_at(state: &Path, session_id: &str) -> Option<String> {
+    if !is_session_id(session_id) {
+        return None;
+    }
+    let mut scratch = ProviderSnapshot::new(Provider::Cursor, vec![], 0);
+    overlay_hook_model_at(&mut scratch, state, session_id);
+    scratch
+        .session_models
+        .remove(session_id)
+        .or_else(configured_model)
+}
+
 fn overlay_hook_model_at(snapshot: &mut ProviderSnapshot, state: &Path, session_id: &str) {
     let Some(hook_model) = load_observation(
         &state
@@ -1508,6 +1530,41 @@ mod tests {
         fn drop(&mut self) {
             set_keychain_approve_attempt_for_test(false);
         }
+    }
+
+    #[test]
+    fn pane_model_comes_from_the_hook_mailbox_then_the_cli_setting() {
+        let _guard = env_guard();
+        let dir = tempdir().unwrap();
+        let state = dir.path().join("state");
+        let home = dir.path().join("home");
+        fs::create_dir_all(state.join(HOOK_MAILBOX_DIR)).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join("cli-config.json"),
+            r#"{"model":{"modelId":"composer-2","displayName":"Composer 2"}}"#,
+        )
+        .unwrap();
+        let mailbox = |id: &str, model: &str| {
+            fs::write(
+                state.join(HOOK_MAILBOX_DIR).join(format!("{id}.json")),
+                format!(r#"{{"conversation_id":"{id}","model":"{model}"}}"#),
+            )
+            .unwrap();
+        };
+        mailbox("s-grok", "grok-4.7-high");
+        mailbox("s-auto", "default");
+        std::env::set_var("CURSOR_HOME", &home);
+        let grok = pane_model_at(&state, "s-grok");
+        let auto = pane_model_at(&state, "s-auto");
+        let unseen = pane_model_at(&state, "s-new");
+        let traversal = pane_model_at(&state, "../s-grok");
+        std::env::remove_var("CURSOR_HOME");
+        assert_eq!(grok.as_deref(), Some("grok-4.7-high"));
+        // Auto defers to the CLI's current model setting.
+        assert_eq!(auto.as_deref(), Some("Composer 2"));
+        assert_eq!(unseen.as_deref(), Some("Composer 2"));
+        assert_eq!(traversal, None);
     }
 
     fn isolate_cursor_identity(dir: &Path) {

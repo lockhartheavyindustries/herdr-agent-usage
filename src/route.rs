@@ -67,13 +67,29 @@ pub fn resolve_with_identity(pane: &AgentPane) -> ResolvedPane {
             )
         }
     };
+    let identity = match pane.harness {
+        Harness::Cursor => cursor_identity(pane),
+        _ => None,
+    };
     ResolvedPane {
         resolution,
-        identity: None,
+        identity,
         context: None,
         omp: None,
         session_summary: None,
     }
+}
+
+/// "Cursor / <model>" from Cursor's own per-session data for this pane's
+/// session, so the row names its model even before the quota login is
+/// approved. No model evidence means no identity: never a guess.
+fn cursor_identity(pane: &AgentPane) -> Option<PaneIdentity> {
+    let session_id = pane.session.as_ref()?.id()?;
+    let model = crate::providers::cursor::pane_model(session_id)?;
+    Some(PaneIdentity {
+        provider: "Cursor".to_string(),
+        model: safe_identity_part(&model)?,
+    })
 }
 
 /// Hermes records no subscription quota, so the pane never resolves to a
@@ -262,6 +278,27 @@ mod tests {
             status: AgentStatus::Idle,
             focused: false,
         }
+    }
+
+    #[test]
+    fn cursor_pane_names_its_own_model_not_another_providers() {
+        let _guard = crate::providers::test_support::env_guard();
+        let state = tempdir().unwrap();
+        let mailbox = state.path().join("cursor-hooks");
+        fs::create_dir_all(&mailbox).unwrap();
+        fs::write(
+            mailbox.join("s-1.json"),
+            r#"{"conversation_id":"s-1","model":"grok-4.7-high"}"#,
+        )
+        .unwrap();
+        std::env::set_var("HERDR_PLUGIN_STATE_DIR", state.path());
+        let known = resolve_with_identity(&pane(Harness::Cursor, Some("s-1")));
+        let no_session = resolve_with_identity(&pane(Harness::Cursor, None));
+        std::env::remove_var("HERDR_PLUGIN_STATE_DIR");
+        let identity = known.identity.unwrap();
+        assert_eq!(identity.provider, "Cursor");
+        assert_eq!(identity.model, "grok-4.7-high");
+        assert!(no_session.identity.is_none());
     }
 
     fn pi_fixture(name: &str) -> PathBuf {

@@ -2528,7 +2528,12 @@ fn strip_control_chars(value: &str) -> String {
 
 fn is_status_line(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
+    // Firstmate's steering doorbell is typed into the prompt box; it is not
+    // anything the user asked.
+    let doorbell = lower.trim_start_matches(|c: char| c == ':' || c.is_whitespace());
     lower.starts_with("accept-edits mode:")
+        || doorbell.starts_with("firstmate operational input waiting")
+        || doorbell.starts_with("firstmate_op")
         || lower.starts_with("context ")
         || lower.starts_with("session ")
         || lower.starts_with("auto mode")
@@ -4337,6 +4342,36 @@ mod tests {
             extract_topic("› Ask Codex to do anything\n", Harness::Codex),
             None
         );
+    }
+
+    #[test]
+    fn firstmate_doorbell_is_never_a_topic() {
+        let screen = "❯ fix the quota sidebar\n\
+                      ❯ : Firstmate operational input waiting: read '/Users/x/y.msg' and handle it\n";
+        assert_eq!(
+            extract_topic(screen, Harness::Claude).as_deref(),
+            Some("fix the quota sidebar")
+        );
+        assert_eq!(
+            extract_topic("❯ FIRSTMATE_OP: v1 launch-brief: # role\n", Harness::Claude),
+            None
+        );
+        let mut pane = AgentPane {
+            pane_id: "w1:p2".to_string(),
+            workspace_id: "w1".to_string(),
+            cwd: String::new(),
+            title: String::new(),
+            harness: Harness::Claude,
+            session: None,
+            session_summary: String::new(),
+            topic: ": Firstmate operational input waiting: read '/Users/x…".to_string(),
+            tokens: BTreeMap::new(),
+            status: AgentStatus::Idle,
+            focused: false,
+        };
+        assert_eq!(display_topic(&pane), "");
+        pane.session_summary = "real brief line".to_string();
+        assert_eq!(display_topic(&pane), "real brief line");
     }
 
     #[test]

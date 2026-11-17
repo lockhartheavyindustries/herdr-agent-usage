@@ -217,6 +217,99 @@ pub fn run_statusline(input: &[u8]) -> std::result::Result<ProviderSnapshot, Pro
     parse_statusline(&value, CacheStore::now_unix())
 }
 
+const TRANSCRIPT_TAIL_BYTES: u64 = 512 * 1024;
+
+fn claude_config_dir() -> Option<std::path::PathBuf> {
+    if let Some(directory) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty())
+    {
+        return Some(directory.into());
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::PathBuf::from(home).join(".claude"))
+}
+
+/// The model a Claude pane's session last answered with, read from the tail
+/// of that session's own transcript. Used only when the statusLine hook has
+/// not reported the session (a worker pane that never rendered one), so the
+/// row names its model instead of just "Claude".
+pub fn transcript_model(session_id: &str) -> Option<String> {
+    transcript_model_at(&claude_config_dir()?, session_id)
+}
+
+pub fn transcript_model_at(config_dir: &std::path::Path, session_id: &str) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    if session_id.is_empty()
+        || session_id.len() > 64
+        || !session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return None;
+    }
+    let file_name = format!("{session_id}.jsonl");
+    let path = std::fs::read_dir(config_dir.join("projects"))
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path().join(&file_name))
+        .find(|path| path.is_file())?;
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let start = length.saturating_sub(TRANSCRIPT_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut tail = Vec::new();
+    file.take(TRANSCRIPT_TAIL_BYTES)
+        .read_to_end(&mut tail)
+        .ok()?;
+    let text = String::from_utf8_lossy(&tail);
+    let mut lines = text.lines();
+    if start > 0 {
+        // The first line of a mid-file read is almost certainly cut.
+        lines.next();
+    }
+    lines
+        .rev()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|value| value.get("type").and_then(Value::as_str) == Some("assistant"))
+        .filter_map(|value| {
+            value
+                .pointer("/message/model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .find(|model| !model.starts_with('<'))
+        .map(|model| friendly_model(&model))
+}
+
+/// `claude-opus-5-5` -> `Opus 5.5`; `claude-sonnet-4-5-20250929` -> `Sonnet
+/// 4.5`. An id that does not follow the pattern is shown as it is.
+pub fn friendly_model(id: &str) -> String {
+    let base = id.split('[').next().unwrap_or(id);
+    let Some(rest) = base.strip_prefix("claude-") else {
+        return id.to_string();
+    };
+    let mut parts = rest.split('-');
+    let Some(family) = parts.next().filter(|family| {
+        !family.is_empty()
+            && family
+                .chars()
+                .all(|character| character.is_ascii_alphabetic())
+    }) else {
+        return id.to_string();
+    };
+    let version: Vec<&str> = parts
+        .take_while(|part| part.len() <= 2 && part.chars().all(|c| c.is_ascii_digit()))
+        .collect();
+    let mut family = family.to_string();
+    if let Some(first) = family.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    if version.is_empty() {
+        family
+    } else {
+        format!("{family} {}", version.join("."))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,5 +543,35 @@ mod tests {
     #[test]
     fn rejects_non_json_statusline_input() {
         assert!(run_statusline(b"not-json").is_err());
+    }
+
+    #[test]
+    fn friendly_model_names_follow_the_claude_id_pattern() {
+        assert_eq!(friendly_model("claude-opus-5-5"), "Opus 5.5");
+        assert_eq!(friendly_model("claude-fable-5-2[1m]"), "Fable 5.2");
+        assert_eq!(friendly_model("claude-sonnet-4-5-20250929"), "Sonnet 4.5");
+        assert_eq!(friendly_model("claude-haiku-5-5"), "Haiku 5.5");
+        assert_eq!(friendly_model("something-else"), "something-else");
+    }
+
+    #[test]
+    fn transcript_model_is_the_latest_assistant_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("projects/-some-project");
+        std::fs::create_dir_all(&project).unwrap();
+        let lines = [
+            r#"{"type":"assistant","message":{"model":"claude-opus-5-5"}}"#,
+            r#"{"type":"user","message":{"content":"hi"}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-sonnet-5-5"}}"#,
+            r#"{"type":"assistant","message":{"model":"<synthetic>"}}"#,
+            r#"not json"#,
+        ];
+        std::fs::write(project.join("abc-123.jsonl"), lines.join("\n")).unwrap();
+        assert_eq!(
+            transcript_model_at(dir.path(), "abc-123").as_deref(),
+            Some("Sonnet 5.5")
+        );
+        assert_eq!(transcript_model_at(dir.path(), "missing"), None);
+        assert_eq!(transcript_model_at(dir.path(), "../abc-123"), None);
     }
 }
